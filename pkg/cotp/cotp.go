@@ -142,13 +142,24 @@ func (c *Conn) Send(payload []byte) error {
 	return c.sendRaw(dt)
 }
 
-// Receive reads the next COTP Data (DT) PDU and returns its payload.
+// Receive reads one complete COTP TSDU and returns its payload.
+// A TSDU may span multiple DT segments; segments are concatenated until EOT=1.
 func (c *Conn) Receive() ([]byte, error) {
-	buf, err := c.readTPKT()
-	if err != nil {
-		return nil, err
+	var tsdu []byte
+	for {
+		buf, err := c.readTPKT()
+		if err != nil {
+			return nil, err
+		}
+		payload, eot, err := parseDT(buf)
+		if err != nil {
+			return nil, err
+		}
+		tsdu = append(tsdu, payload...)
+		if eot {
+			return tsdu, nil
+		}
 	}
-	return parseDT(buf)
 }
 
 // Close closes the underlying connection.
@@ -284,19 +295,21 @@ func buildDT(payload []byte) []byte {
 	return buf
 }
 
-// parseDT parses a Data PDU and returns the payload.
-func parseDT(buf []byte) ([]byte, error) {
+// parseDT parses a Data PDU and returns the payload and the EOT (end-of-TSDU) flag.
+// EOT is bit 7 of the TPDU-NR byte (third header byte). When EOT=0, more segments follow.
+func parseDT(buf []byte) (payload []byte, eot bool, err error) {
 	if len(buf) < 3 {
-		return nil, fmt.Errorf("COTP: DT too short (%d)", len(buf))
+		return nil, false, fmt.Errorf("COTP: DT too short (%d)", len(buf))
 	}
 	if buf[1] != pduDT {
-		return nil, fmt.Errorf("COTP: expected DT (0xF0), got 0x%02X", buf[1])
+		return nil, false, fmt.Errorf("COTP: expected DT (0xF0), got 0x%02X", buf[1])
 	}
 	li := int(buf[0])
 	if li+1 > len(buf) {
-		return nil, fmt.Errorf("COTP: DT header length %d exceeds buffer %d", li, len(buf))
+		return nil, false, fmt.Errorf("COTP: DT header length %d exceeds buffer %d", li, len(buf))
 	}
-	return buf[li+1:], nil
+	eot = buf[2]&0x80 != 0
+	return buf[li+1:], eot, nil
 }
 
 // buildOptions serializes the options portion of CR/CC.

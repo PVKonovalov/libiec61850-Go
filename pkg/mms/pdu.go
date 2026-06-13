@@ -357,7 +357,8 @@ func EncodeWriteRequest(invokeID uint32, specs []VariableSpecification, values [
 }
 
 // EncodeGetNameListRequest builds a GetNameList request PDU.
-func EncodeGetNameListRequest(invokeID uint32, objectClass int, domainID string) []byte {
+// continueAfter, if non-empty, is the last name received in a previous page (ISO 9506-2 pagination).
+func EncodeGetNameListRequest(invokeID uint32, objectClass int, domainID string, continueAfter string) []byte {
 	var svcBody []byte
 
 	// [0] objectClass: [0] basicObjectClass integer
@@ -372,6 +373,11 @@ func EncodeGetNameListRequest(invokeID uint32, objectClass int, domainID string)
 		// [0] vmdSpecific: NULL
 		svcBody = append(svcBody, asn1ber.EncodeContextTLV(1, true,
 			asn1ber.EncodeContextTLV(0, false, nil))...)
+	}
+
+	// [5] continueAfter: VisibleString (pagination)
+	if continueAfter != "" {
+		svcBody = append(svcBody, asn1ber.EncodeContextTLV(5, false, []byte(continueAfter))...)
 	}
 
 	svcTag := encodeContextImplicit(svcGetNameList, true, svcBody)
