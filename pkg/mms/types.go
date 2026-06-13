@@ -33,6 +33,7 @@ package mms
 import (
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -144,6 +145,7 @@ func (e Error) Error() string {
 type UTCTime struct {
 	Seconds              uint32
 	Fractions            uint32 // 24-bit sub-second fractions (1/2^24 second resolution)
+	AccuracyClass        byte
 	ClockFailure         bool
 	ClockNotSynchronized bool
 	LeapSecondsKnown     bool
@@ -153,6 +155,32 @@ type UTCTime struct {
 func (u UTCTime) ToTime() time.Time {
 	ns := int64(u.Fractions) * 1e9 / (1 << 24)
 	return time.Unix(int64(u.Seconds), ns).UTC()
+}
+
+func (u UTCTime) QualityDecode() string {
+	var flags []string
+
+	if u.LeapSecondsKnown {
+		flags = append(flags, "LeapSecondKnown")
+	}
+	if u.ClockFailure {
+		flags = append(flags, "ClockFailure")
+	}
+	if u.ClockNotSynchronized {
+		flags = append(flags, "ClockNotSychronized")
+	}
+	// (0x1F) - TimeAccuracy class
+
+	if u.AccuracyClass > 0 {
+		accuracy := getTimeAccuracy(u.AccuracyClass)
+		flags = append(flags, fmt.Sprintf("T%d:%s", getPerformanceClass(u.AccuracyClass), accuracy))
+	}
+
+	if len(flags) == 0 {
+		return "GOOD"
+	}
+
+	return strings.Join(flags, " ")
 }
 
 // UTCTimeFromTime creates a UTCTime from a time.Time.

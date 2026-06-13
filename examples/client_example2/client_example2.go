@@ -77,7 +77,7 @@ func main() {
 
 	// ---- Read an analog measurement value ----
 	value, err := conn.ReadObject(
-		"STRATON_IEDLDevice/MMXU1.TotW.mag.f",
+		"STRATON_IEDLDevice/MMXU1.TotW",
 		common.FC_MX,
 	)
 	if err != nil {
@@ -88,6 +88,9 @@ func main() {
 			fmt.Printf("read float value: %f\n", value.GetFloat32())
 		case mms.TypeDataAccessError:
 			fmt.Printf("Failed to read value (error code: %d)\n", value.GetDataAccessError())
+		case mms.TypeStructure:
+			val, quality, ts, tsq := extractMeasurement(value)
+			fmt.Printf("  Object: Value: %f, Quality: %d, Timestamp: %s [%s]\n", val, quality, ts.Format("2006-01-02 15:04:05.000 -0700 MST"), tsq)
 		default:
 			fmt.Printf("read value: %s\n", value)
 		}
@@ -190,15 +193,15 @@ func reportCallbackFunction(report *client.Report) {
 			continue
 		}
 
-		value, quality, ts := extractMeasurement(elem)
-		fmt.Printf("  Object: DataPoint_%d, Value: %f, Quality: %d, Timestamp: %s\n",
-			i, value, quality, ts.Format("2006-01-02 15:04:05.000 -0700 MST"))
+		value, quality, ts, tsq := extractMeasurement(elem)
+		fmt.Printf("  Object: DataPoint_%d, Value: %f, Quality: %d, Timestamp: %s [%s]\n",
+			i, value, quality, ts.Format("2006-01-02 15:04:05.000 -0700 MST"), tsq)
 	}
 }
 
 // extractMeasurement pulls (mag.f, quality, timestamp) from an IEC 61850 analogue
 // measurement STRUCTURE of the form { mag{f:FLOAT}, q:BIT-STRING, t:UTC-TIME }.
-func extractMeasurement(elem *mms.Value) (value float64, quality uint16, ts time.Time) {
+func extractMeasurement(elem *mms.Value) (value float64, quality uint16, ts time.Time, tsq string) {
 	if elem == nil || elem.Type() != mms.TypeStructure || elem.Size() < 3 {
 		return
 	}
@@ -230,6 +233,7 @@ func extractMeasurement(elem *mms.Value) (value float64, quality uint16, ts time
 	// [2] t — UTC timestamp converted to local time
 	if t := elem.GetElement(2); t != nil && t.Type() == mms.TypeUTCTime {
 		ts = t.GetUTCTime().ToTime().Local()
+		tsq = t.GetUTCTime().QualityDecode()
 	}
 	return
 }

@@ -339,6 +339,8 @@ func decodeUTCTime(buf []byte) (UTCTime, error) {
 	t.LeapSecondsKnown = (q & 0x80) != 0
 	t.ClockFailure = (q & 0x40) != 0
 	t.ClockNotSynchronized = (q & 0x20) != 0
+	t.AccuracyClass = q & 0x1F
+
 	return t, nil
 }
 
