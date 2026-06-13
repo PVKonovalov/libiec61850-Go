@@ -44,6 +44,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -74,8 +75,13 @@ const (
 
 // Options holds configuration for a client connection.
 type Options struct {
-	// Timeout is the request timeout duration. Default: 10s.
-	Timeout time.Duration
+	// ConnectTimeout is the timeout for establishing the TCP+COTP+MMS connection. Default: 10s.
+	ConnectTimeout time.Duration
+	// RequestTimeout is the per-request timeout for send and response. Default: 10s.
+	RequestTimeout time.Duration
+	// IdleTimeout is the maximum time the background read loop waits for any
+	// data from the server before treating the connection as dead. Default: 0 (no limit).
+	IdleTimeout time.Duration
 	// LocalAddress is the optional local IP and port to bind to.
 	LocalAddress string
 	// LocalPort is the local TCP port. -1 = OS-assigned.
@@ -87,8 +93,9 @@ type Options struct {
 // DefaultOptions returns sensible default options.
 func DefaultOptions() Options {
 	return Options{
-		Timeout:   10 * time.Second,
-		LocalPort: -1,
+		ConnectTimeout: 10 * time.Second,
+		RequestTimeout: 10 * time.Second,
+		LocalPort:      -1,
 	}
 }
 
@@ -143,22 +150,40 @@ type IedConnection struct {
 
 	// channel for receiving PDUs from the background reader
 	readErr chan error
+
+	// context for cancelling background goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Dial creates a new IEC 61850 connection to the given server address (host:port).
 // It performs the full COTP + ACSE + MMS handshake.
 func Dial(address string) (*IedConnection, error) {
-	return DialWithOptions(address, DefaultOptions())
+	return DialContext(context.Background(), address, DefaultOptions())
+}
+
+// DialContext creates a new IEC 61850 connection with a context for cancellation.
+// Cancelling ctx closes the connection and stops all background goroutines.
+func DialContext(ctx context.Context, address string, opts Options) (*IedConnection, error) {
+	return DialWithOptions(address, opts, ctx)
 }
 
 // DialWithOptions creates a connection with custom options.
-func DialWithOptions(address string, opts Options) (*IedConnection, error) {
+// An optional context may be provided as an extra argument; if omitted, context.Background() is used.
+func DialWithOptions(address string, opts Options, ctxArgs ...context.Context) (*IedConnection, error) {
+	parent := context.Background()
+	if len(ctxArgs) > 0 && ctxArgs[0] != nil {
+		parent = ctxArgs[0]
+	}
+	ctx, cancel := context.WithCancel(parent)
 	c := &IedConnection{
 		opts:           opts,
 		state:          StateConnecting,
 		pending:        make(map[uint32]*outstandingCall),
 		reportHandlers: make(map[string]*reportSubscription),
 		readErr:        make(chan error, 1),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 
 	// Establish TCP + COTP connection
@@ -170,8 +195,8 @@ func DialWithOptions(address string, opts Options) (*IedConnection, error) {
 		}
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(opts.LocalAddress), Port: port}
 	}
-	if opts.Timeout > 0 {
-		dialer.Timeout = opts.Timeout
+	if opts.ConnectTimeout > 0 {
+		dialer.Timeout = opts.ConnectTimeout
 	}
 
 	cotpOpts := cotp.DefaultOptions()
@@ -251,6 +276,9 @@ func (c *IedConnection) Close() error {
 	}
 	c.state = StateClosing
 	c.mu.Unlock()
+
+	// Cancel context to unblock background goroutines.
+	c.cancel()
 
 	// Send MMS Conclude Request wrapped in Session+Presentation
 	concludeReq := mms.EncodeConcludeRequest()
@@ -702,15 +730,19 @@ func (c *IedConnection) sendAndReceive(invokeID uint32, reqPDU []byte) ([]byte, 
 		c.pendingMu.Unlock()
 	}()
 
+	timeout := c.opts.RequestTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	// Set write deadline so a stalled TCP send does not block forever.
+	_ = c.cotpConn.SetWriteDeadline(time.Now().Add(timeout))
+	defer c.cotpConn.SetWriteDeadline(time.Time{}) //nolint:errcheck
+
 	// Wrap MMS PDU in Presentation User Data + Session Data SPDU
 	wrapped := isosession.WrapDataSPDU(isopresentation.WrapUserData(reqPDU))
 	if err := c.cotpConn.Send(wrapped); err != nil {
 		return nil, fmt.Errorf("iec61850 client: send request: %w", err)
-	}
-
-	timeout := c.opts.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
 	}
 
 	select {
@@ -720,14 +752,35 @@ func (c *IedConnection) sendAndReceive(invokeID uint32, reqPDU []byte) ([]byte, 
 		return nil, err
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("iec61850 client: request timeout (invokeID=%d)", invokeID)
+	case <-c.ctx.Done():
+		return nil, fmt.Errorf("iec61850 client: connection closed: %w", c.ctx.Err())
 	}
 }
 
 // readLoop is the background goroutine that reads incoming PDUs and dispatches them.
+// It exits when the connection is closed or the context is cancelled.
 func (c *IedConnection) readLoop() {
 	for {
+		// Check for cancellation before blocking on Receive.
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
+		// Apply a rolling idle deadline if configured.
+		if c.opts.IdleTimeout > 0 {
+			_ = c.cotpConn.SetReadDeadline(time.Now().Add(c.opts.IdleTimeout))
+		}
+
 		raw, err := c.cotpConn.Receive()
 		if err != nil {
+			// If context was canceled, exit silently — Close() triggered this.
+			select {
+			case <-c.ctx.Done():
+				return
+			default:
+			}
 			c.mu.Lock()
 			c.state = StateClosed
 			c.mu.Unlock()

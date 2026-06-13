@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 )
 
 const (
@@ -158,6 +159,18 @@ func (c *Conn) Close() error {
 // RemoteAddr returns the remote network address.
 func (c *Conn) RemoteAddr() net.Addr {
 	return c.conn.RemoteAddr()
+}
+
+// SetReadDeadline sets a deadline on the underlying TCP read.
+// Pass zero to clear the deadline.
+func (c *Conn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+// SetWriteDeadline sets a deadline on the underlying TCP write.
+// Pass zero to clear the deadline.
+func (c *Conn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
 }
 
 // ---- internal helpers ----
