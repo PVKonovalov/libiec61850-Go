@@ -377,65 +377,56 @@ func (c *IedConnection) WriteObject(objectRef string, fc common.FunctionalConstr
 
 // GetServerDirectory returns the list of logical device names on the server.
 func (c *IedConnection) GetServerDirectory() ([]string, error) {
-	invokeID := c.nextInvokeID()
-	reqPDU := mms.EncodeGetNameListRequest(invokeID, mms.ObjectClassDomain, "")
-
-	respBody, err := c.sendAndReceive(invokeID, reqPDU)
-	if err != nil {
-		return nil, err
-	}
-
-	pduType, err := mms.ParsePDUType(respBody)
-	if err != nil {
-		return nil, err
-	}
-	if pduType == 0xA2 {
-		_, mmsErr, _ := mms.ParseConfirmedError(respBody)
-		return nil, mapMMSError(mmsErr)
-	}
-
-	_, svcTag, svcContent, err := mms.ParseConfirmedResponse(respBody)
-	if err != nil {
-		return nil, err
-	}
-	_ = svcTag
-
-	resp, err := mms.ParseGetNameListResponse(svcContent)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Names, nil
+	return c.getNameList(mms.ObjectClassDomain, "")
 }
 
 // GetLogicalDeviceDirectory returns the list of logical node names in a logical device.
 func (c *IedConnection) GetLogicalDeviceDirectory(ldName string) ([]string, error) {
-	invokeID := c.nextInvokeID()
-	reqPDU := mms.EncodeGetNameListRequest(invokeID, mms.ObjectClassNamedVariable, ldName)
+	return c.getNameList(mms.ObjectClassNamedVariable, ldName)
+}
 
-	respBody, err := c.sendAndReceive(invokeID, reqPDU)
-	if err != nil {
-		return nil, err
+// getNameList issues GetNameList requests, following moreFollows pagination until all names are received.
+func (c *IedConnection) getNameList(objectClass int, domainID string) ([]string, error) {
+	var all []string
+	continueAfter := ""
+
+	for {
+		invokeID := c.nextInvokeID()
+		reqPDU := mms.EncodeGetNameListRequest(invokeID, objectClass, domainID, continueAfter)
+
+		respBody, err := c.sendAndReceive(invokeID, reqPDU)
+		if err != nil {
+			return nil, err
+		}
+
+		pduType, err := mms.ParsePDUType(respBody)
+		if err != nil {
+			return nil, err
+		}
+		if pduType == 0xA2 {
+			_, mmsErr, _ := mms.ParseConfirmedError(respBody)
+			return nil, mapMMSError(mmsErr)
+		}
+
+		_, _, svcContent, err := mms.ParseConfirmedResponse(respBody)
+		if err != nil {
+			return nil, err
+		}
+
+		resp, err := mms.ParseGetNameListResponse(svcContent)
+		if err != nil {
+			return nil, err
+		}
+
+		all = append(all, resp.Names...)
+
+		if !resp.MoreFollows || len(resp.Names) == 0 {
+			break
+		}
+		continueAfter = resp.Names[len(resp.Names)-1]
 	}
 
-	pduType, err := mms.ParsePDUType(respBody)
-	if err != nil {
-		return nil, err
-	}
-	if pduType == 0xA2 {
-		_, mmsErr, _ := mms.ParseConfirmedError(respBody)
-		return nil, mapMMSError(mmsErr)
-	}
-
-	_, _, svcContent, err := mms.ParseConfirmedResponse(respBody)
-	if err != nil {
-		return nil, err
-	}
-
-	resp, err := mms.ParseGetNameListResponse(svcContent)
-	if err != nil {
-		return nil, err
-	}
-	return resp.Names, nil
+	return all, nil
 }
 
 // ReadDataSetValues reads all values of a named data set.
