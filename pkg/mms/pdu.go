@@ -242,22 +242,22 @@ func EncodeInitiateRequest() []byte {
 	// [2] proposedMaxServOutstandingCalled: 5
 	body = append(body, asn1ber.EncodeContextTLV(2, false, asn1ber.EncodeIntegerContent(5))...)
 
-	// [4] proposedDataStructureNestingLevel: 10
-	body = append(body, asn1ber.EncodeContextTLV(4, false, asn1ber.EncodeIntegerContent(10))...)
+	// [3] proposedDataStructureNestingLevel: 10
+	body = append(body, asn1ber.EncodeContextTLV(3, false, asn1ber.EncodeIntegerContent(10))...)
 
-	// [5] initRequestDetail
-	var detail5 []byte
+	// [4] mmsInitRequestDetail (CONSTRUCTED)
+	var detail4 []byte
 	// [0] proposedVersionNumber: 1
-	detail5 = append(detail5, asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(1))...)
-	// [1] proposedParameterCBB: 16-bit BIT STRING - standard IEC 61850 value
-	detail5 = append(detail5, asn1ber.EncodeContextTLV(1, false, []byte{0x03, 0xef, 0x18})...)
-	// [2] servicesSupportedCalling: 11-byte BIT STRING
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(1))...)
+	// [1] proposedParameterCBB: 16-bit BIT STRING
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(1, false, []byte{0x03, 0xef, 0x18})...)
+	// [4] servicesSupportedCalling: 11-byte BIT STRING (tag [4] per ISO 9506-2)
 	servicesBits := []byte{
 		0xee, 0x1c, 0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x79, 0xef, 0x18,
 	}
-	detail5 = append(detail5, asn1ber.EncodeContextTLV(2, false, append([]byte{0x00}, servicesBits...))...)
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(4, false, append([]byte{0x00}, servicesBits...))...)
 
-	body = append(body, asn1ber.EncodeContextTLV(5, true, detail5)...)
+	body = append(body, asn1ber.EncodeContextTLV(4, true, detail4)...)
 
 	return append([]byte{tagInitiateRequestPDU}, append(asn1ber.EncodeLength(len(body)), body...)...)
 }
