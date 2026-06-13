@@ -27,18 +27,18 @@ Transport:    ISO COTP (ISO 8073, RFC 1006 over TCP)
 
 ## Package Layout
 
-| Package | Description |
-|---|---|
-| `pkg/asn1ber` | ASN.1 Basic Encoding Rules (BER) encoder/decoder |
-| `pkg/cotp` | ISO 8073 Connection-Oriented Transport Protocol over RFC 1006/TCP |
-| `pkg/acse` | ACSE (Association Control Service Element) – connection establishment |
-| `pkg/mms` | MMS types, values, PDU encoding/decoding |
-| `pkg/iec61850/common` | IEC 61850 types: functional constraints, quality, control models |
-| `pkg/iec61850/model` | IEC 61850 data model (IedModel → LD → LN → DO → DA) |
-| `pkg/iec61850/client` | IEC 61850 MMS client |
-| `pkg/iec61850/server` | IEC 61850 MMS server |
-| `pkg/goose` | GOOSE publisher and subscriber (raw Ethernet) |
-| `pkg/sv` | Sampled Values publisher and subscriber (raw Ethernet) |
+| Package               | Description                                                           |
+|-----------------------|-----------------------------------------------------------------------|
+| `pkg/asn1ber`         | ASN.1 Basic Encoding Rules (BER) encoder/decoder                      |
+| `pkg/cotp`            | ISO 8073 Connection-Oriented Transport Protocol over RFC 1006/TCP     |
+| `pkg/acse`            | ACSE (Association Control Service Element) – connection establishment |
+| `pkg/mms`             | MMS types, values, PDU encoding/decoding                              |
+| `pkg/iec61850/common` | IEC 61850 types: functional constraints, quality, control models      |
+| `pkg/iec61850/model`  | IEC 61850 data model (IedModel → LD → LN → DO → DA)                   |
+| `pkg/iec61850/client` | IEC 61850 MMS client                                                  |
+| `pkg/iec61850/server` | IEC 61850 MMS server                                                  |
+| `pkg/goose`           | GOOSE publisher and subscriber (raw Ethernet)                         |
+| `pkg/sv`              | Sampled Values publisher and subscriber (raw Ethernet)                |
 
 ---
 
@@ -57,15 +57,15 @@ Transport:    ISO COTP (ISO 8073, RFC 1006 over TCP)
 
 ```go
 import (
-    "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/client"
-    "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
-    "github.com/PVKonovalov/libiec61850-Go/pkg/mms"
+"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/client"
+"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
+"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
 // Connect (performs COTP + ACSE + MMS handshake automatically)
 conn, err := client.Dial("192.168.1.100:102")
 if err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 defer conn.Close()
 ```
@@ -78,14 +78,14 @@ Object references use the IEC 61850 path format:
 ```go
 // Read a float measurand (FC=MX)
 value, err := conn.ReadObject(
-    "simpleIOGenericIO/GGIO1.AnIn1.mag.f",
-    common.FC_MX,
+"simpleIOGenericIO/GGIO1.AnIn1.mag.f",
+common.FC_MX,
 )
 if err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 if value.Type() == mms.TypeFloat {
-    fmt.Printf("AnIn1 magnitude: %f\n", value.GetFloat32())
+fmt.Printf("AnIn1 magnitude: %f\n", value.GetFloat32())
 }
 ```
 
@@ -94,9 +94,9 @@ if value.Type() == mms.TypeFloat {
 ```go
 // Write a visible string (FC=DC for description/configuration)
 err = conn.WriteObject(
-    "simpleIOGenericIO/GGIO1.NamPlt.vendor",
-    common.FC_DC,
-    mms.NewVisibleString("My Application"),
+"simpleIOGenericIO/GGIO1.NamPlt.vendor",
+common.FC_DC,
+mms.NewVisibleString("My Application"),
 )
 ```
 
@@ -105,11 +105,11 @@ err = conn.WriteObject(
 ```go
 dataSet, err := conn.ReadDataSetValues("simpleIOGenericIO/LLN0.Events", nil)
 if err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 values := dataSet.GetDataSetValues() // *mms.Value of TypeStructure
 for i := 0; i < values.Size(); i++ {
-    fmt.Printf("  member[%d] = %s\n", i, values.GetElement(i))
+fmt.Printf("  member[%d] = %s\n", i, values.GetElement(i))
 }
 ```
 
@@ -119,23 +119,23 @@ for i := 0; i < values.Size(); i++ {
 // 1. Read the Report Control Block configuration
 rcb, err := conn.GetRCBValues("simpleIOGenericIO/LLN0.RP.EventsRCB01")
 if err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 
 // 2. Install a report handler (keyed by the RCB's report ID)
 conn.InstallReportHandler(
-    "simpleIOGenericIO/LLN0.RP.EventsRCB01",
-    rcb.RptID,
-    func(report *client.Report) {
-        fmt.Printf("report received: %s\n", report.RCBReference)
-        vals := report.DataSetValues
-        for i := 0; i < vals.Size(); i++ {
-            reason := report.ReasonForInclusion[i]
-            if reason != common.ReasonNotIncluded {
-                fmt.Printf("  [%d] %s (reason=%d)\n", i, vals.GetElement(i), reason)
-            }
-        }
-    },
+"simpleIOGenericIO/LLN0.RP.EventsRCB01",
+rcb.RptID,
+func (report *client.Report) {
+fmt.Printf("report received: %s\n", report.RCBReference)
+vals := report.DataSetValues
+for i := 0; i < vals.Size(); i++ {
+reason := report.ReasonForInclusion[i]
+if reason != common.ReasonNotIncluded {
+fmt.Printf("  [%d] %s (reason=%d)\n", i, vals.GetElement(i), reason)
+}
+}
+},
 )
 
 // 3. Enable reporting with trigger options
@@ -144,8 +144,8 @@ rcb.TrgOps = common.TriggerDataChanged | common.TriggerIntegrity | common.Trigge
 rcb.IntgPd = 5000 // integrity period in ms
 
 err = conn.SetRCBValues(rcb,
-    client.RCBElementRptEna | client.RCBElementTrgOps | client.RCBElementIntgPd,
-    true,
+client.RCBElementRptEna | client.RCBElementTrgOps | client.RCBElementIntgPd,
+true,
 )
 
 // 4. Trigger a General Interrogation to receive all current values
@@ -173,10 +173,10 @@ nodes, err := conn.GetLogicalDeviceDirectory("simpleIO")
 
 ```go
 import (
-    "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
-    imodel "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/model"
-    "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/server"
-    "github.com/PVKonovalov/libiec61850-Go/pkg/mms"
+"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
+imodel "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/model"
+"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/server"
+"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
 // Create the root IED model
@@ -207,7 +207,7 @@ t.Value = mms.NewUTCTime(mms.UTCTimeFromTime(time.Now()))
 ```go
 iedServer := server.NewIedServer(iedModel, nil) // nil = default config
 if err := iedServer.Start(102); err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 defer iedServer.Stop()
 ```
@@ -223,14 +223,14 @@ iedServer.UpdateAttributeValue(stVal, newVal)
 ### Write Access Control
 
 ```go
-iedServer.SetWriteAccessHandler(func(
-    da *imodel.DataAttribute,
-    value *mms.Value,
-    clientAddr net.Addr,
+iedServer.SetWriteAccessHandler(func (
+da *imodel.DataAttribute,
+value *mms.Value,
+clientAddr net.Addr,
 ) error {
-    fmt.Printf("client %s wants to write %s = %s\n", clientAddr, da.Name(), value)
-    // Return nil to allow, or an error to reject
-    return nil
+fmt.Printf("client %s wants to write %s = %s\n", clientAddr, da.Name(), value)
+// Return nil to allow, or an error to reject
+return nil
 })
 ```
 
@@ -242,21 +242,21 @@ GOOSE uses raw Ethernet frames (requires root/`CAP_NET_RAW` on Linux).
 
 ```go
 import (
-    "github.com/PVKonovalov/libiec61850-Go/pkg/goose"
-    "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
-    "github.com/PVKonovalov/libiec61850-Go/pkg/mms"
+"github.com/PVKonovalov/libiec61850-Go/pkg/goose"
+"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
+"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
 pub, err := goose.NewPublisher(goose.PublisherConfig{
-    Interface: "eth0",
-    CommParams: common.PhyComAddress{
-        AppID:        1000,
-        DstAddress:   common.DefaultGooseMulticastAddress(),
-        VLANPriority: 4,
-    },
+Interface: "eth0",
+CommParams: common.PhyComAddress{
+AppID:        1000,
+DstAddress:   common.DefaultGooseMulticastAddress(),
+VLANPriority: 4,
+},
 })
 if err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 defer pub.Close()
 
@@ -267,8 +267,8 @@ pub.SetTimeAllowedToLive(2000) // ms
 
 // Publish dataset values (increments StNum, resets retransmission counter)
 values := []*mms.Value{
-    mms.NewBoolean(true),
-    mms.NewFloat32(3.14),
+mms.NewBoolean(true),
+mms.NewFloat32(3.14),
 }
 pub.Publish(values)
 ```
@@ -281,12 +281,12 @@ pub.Publish(values)
 import "github.com/PVKonovalov/libiec61850-Go/pkg/goose"
 
 // Create a subscriber for a specific App ID
-sub := goose.NewSubscriber(1000, func(appID uint16, pdu *goose.GoosePDU) {
-    fmt.Printf("GOOSE from AppID=%d: StNum=%d SqNum=%d\n",
-        appID, pdu.StNum, pdu.SqNum)
-    for i, v := range pdu.AllData {
-        fmt.Printf("  data[%d] = %s\n", i, v)
-    }
+sub := goose.NewSubscriber(1000, func (appID uint16, pdu *goose.GoosePDU) {
+fmt.Printf("GOOSE from AppID=%d: StNum=%d SqNum=%d\n",
+appID, pdu.StNum, pdu.SqNum)
+for i, v := range pdu.AllData {
+fmt.Printf("  data[%d] = %s\n", i, v)
+}
 })
 // Optional: filter by control block reference
 sub.SetGoCBRef("simpleIO/LLN0$GO$gcbEvents")
@@ -295,7 +295,7 @@ sub.SetGoCBRef("simpleIO/LLN0$GO$gcbEvents")
 recv := goose.NewReceiver("eth0")
 recv.AddSubscriber(sub)
 if err := recv.Start(); err != nil {
-    log.Fatal(err)
+log.Fatal(err)
 }
 defer recv.Stop()
 ```
@@ -318,16 +318,16 @@ ts := mms.NewUTCTime(mms.UTCTimeFromTime(time.Now()))
 
 // Array and structure
 arr := mms.NewArray([]*mms.Value{
-    mms.NewInt32(1),
-    mms.NewInt32(2),
-    mms.NewInt32(3),
+mms.NewInt32(1),
+mms.NewInt32(2),
+mms.NewInt32(3),
 })
 str := mms.NewStructure([]*mms.Value{b, f, s})
 
 // Read values
 if str.Type() == mms.TypeStructure {
-    elem0 := str.GetElement(0) // *mms.Value
-    fmt.Println(elem0.GetBoolean())
+elem0 := str.GetElement(0) // *mms.Value
+fmt.Println(elem0.GetBoolean())
 }
 
 // Timestamps
@@ -341,25 +341,25 @@ t := ts.ToTime() // time.Time
 
 IEC 61850 organizes data attributes into functional constraint groups:
 
-| FC | Name | Description |
-|---|---|---|
-| `ST` | Status | Binary status, quality |
-| `MX` | Measurands | Analog measurements |
-| `SP` | Setpoint | Configurable setpoints |
-| `CF` | Configuration | Configuration parameters |
-| `DC` | Description | Textual descriptions |
-| `SG` | Setting group | Setting group values |
+| FC   | Name             | Description                   |
+|------|------------------|-------------------------------|
+| `ST` | Status           | Binary status, quality        |
+| `MX` | Measurands       | Analog measurements           |
+| `SP` | Setpoint         | Configurable setpoints        |
+| `CF` | Configuration    | Configuration parameters      |
+| `DC` | Description      | Textual descriptions          |
+| `SG` | Setting group    | Setting group values          |
 | `SE` | Setting editable | Editable setting group values |
-| `CO` | Control | Control outputs |
-| `BR` | Buffered report | BRCB (buffered reporting) |
-| `RP` | Report | URCB (unbuffered reporting) |
-| `GO` | GOOSE | GOOSE control blocks |
-| `MS` | Multicast SV | Multicast sampled values |
+| `CO` | Control          | Control outputs               |
+| `BR` | Buffered report  | BRCB (buffered reporting)     |
+| `RP` | Report           | URCB (unbuffered reporting)   |
+| `GO` | GOOSE            | GOOSE control blocks          |
+| `MS` | Multicast SV     | Multicast sampled values      |
 
 ```go
-common.FC_ST  // Status
-common.FC_MX  // Measurands
-common.FC_CF  // Configuration
+common.FC_ST // Status
+common.FC_MX // Measurands
+common.FC_CF // Configuration
 // ...
 ```
 

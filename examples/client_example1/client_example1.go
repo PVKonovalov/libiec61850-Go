@@ -108,7 +108,7 @@ func main() {
 	dataSet, err := conn.ReadDataSetValues("simpleIOGenericIO/LLN0.Events", nil)
 	if err != nil {
 		fmt.Printf("failed to read dataset: %v\n", err)
-		goto close_connection
+		goto closeConnection
 	}
 	fmt.Printf("dataset values: %s\n", dataSet.GetDataSetValues())
 
@@ -117,7 +117,7 @@ func main() {
 		rcb, err := conn.GetRCBValues("simpleIOGenericIO/LLN0.RP.EventsRCB01")
 		if err != nil {
 			fmt.Printf("failed to get RCB values: %v\n", err)
-			goto close_connection
+			goto closeConnection
 		}
 
 		fmt.Printf("RptEna = %v\n", rcb.RptEna)
@@ -161,7 +161,7 @@ func main() {
 		}
 	}
 
-close_connection:
+closeConnection:
 	conn.Close()
 }
 

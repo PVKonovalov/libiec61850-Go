@@ -59,7 +59,7 @@ import (
 	"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
-// Default TCP port for MMS/IEC 61850.
+// DefaultPort for MMS/IEC 61850.
 const DefaultPort = 102
 
 // ConnectionState describes the current state of the IED connection.
@@ -610,7 +610,7 @@ func (c *IedConnection) SetRCBValues(rcb *ReportControlBlock, elements uint32, a
 	var attrs []attrWrite
 
 	// Automatically prepend Resv=false for URCB when enabling reporting (not already writing Resv).
-	// This releases any prior reservation before taking a new one, matching C library behaviour.
+	// This releases any prior reservation before taking a new one, matching C library behavior.
 	if !rcb.Buffered && elements&RCBElementRptEna != 0 && rcb.RptEna && elements&RCBElementResv == 0 {
 		attrs = append(attrs, attrWrite{"$Resv", mms.NewBoolean(false)})
 	}

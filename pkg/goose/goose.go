@@ -111,7 +111,7 @@ func EncodeGOOSEFrame(srcMAC [6]byte, comm common.PhyComAddress, pdu *GoosePDU) 
 	if comm.VLANID != 0 || comm.VLANPriority != 0 {
 		// 802.1Q VLAN tag
 		frame = append(frame, 0x81, 0x00)
-		tci := (uint16(comm.VLANPriority)<<13 | comm.VLANID)
+		tci := uint16(comm.VLANPriority)<<13 | comm.VLANID
 		frame = append(frame, byte(tci>>8), byte(tci))
 	}
 
@@ -357,10 +357,9 @@ func (p *Publisher) Publish(values []*mms.Value) (int, error) {
 	p.pdu.AllData = values
 	p.pdu.NumDatSetEntries = uint32(len(values))
 	p.pdu.T = mms.UTCTimeFromTime(time.Now())
-	pdu := p.pdu
 	p.mu.Unlock()
 
-	frame, err := EncodeGOOSEFrame(p.srcMAC, p.config.CommParams, &pdu)
+	frame, err := EncodeGOOSEFrame(p.srcMAC, p.config.CommParams, new(p.pdu))
 	if err != nil {
 		return -1, err
 	}
@@ -375,10 +374,9 @@ func (p *Publisher) Publish(values []*mms.Value) (int, error) {
 func (p *Publisher) Retransmit() error {
 	p.mu.Lock()
 	p.pdu.SqNum++
-	pdu := p.pdu
 	p.mu.Unlock()
 
-	frame, err := EncodeGOOSEFrame(p.srcMAC, p.config.CommParams, &pdu)
+	frame, err := EncodeGOOSEFrame(p.srcMAC, p.config.CommParams, new(p.pdu))
 	if err != nil {
 		return err
 	}

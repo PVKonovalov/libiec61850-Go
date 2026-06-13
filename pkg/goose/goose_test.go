@@ -117,12 +117,7 @@ func TestEncodeGOOSEFrame(t *testing.T) {
 	}
 
 	// Use goose.common.PhyComAddress equivalent
-	from := struct {
-		VLANPriority uint8
-		VLANID       uint16
-		AppID        uint16
-		DstAddress   [6]byte
-	}(commParams)
+	from := commParams
 	_ = from
 	_ = srcMAC
 	_ = pdu

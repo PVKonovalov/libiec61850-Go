@@ -319,7 +319,7 @@ func Dial(address string, opts Options) (*Conn, error) {
 	return c, nil
 }
 
-// Listen creates a TCP listener and returns COTP connections.
+// Listener is created by a TCP listener and returns COTP connections.
 type Listener struct {
 	l    net.Listener
 	opts Options
