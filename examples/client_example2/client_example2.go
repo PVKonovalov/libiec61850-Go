@@ -72,7 +72,12 @@ func main() {
 	address := fmt.Sprintf("%s:%d", host, port)
 	fmt.Printf("Connecting to %s\n", address)
 
-	conn, err := client.DialContext(ctx, address, client.DefaultOptions())
+	opts := client.DefaultOptions()
+	opts.ConnectTimeout = 5 * time.Second  // TCP+COTP+MMS handshake
+	opts.RequestTimeout = 10 * time.Second // per read/write call
+	opts.IdleTimeout = 30 * time.Second    // dead-connection detection
+	conn, err := client.DialContext(ctx, address, opts)
+
 	if err != nil {
 		fmt.Printf("Failed to connect to %s: %v\n", address, err)
 		return

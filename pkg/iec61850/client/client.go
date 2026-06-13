@@ -75,8 +75,13 @@ const (
 
 // Options holds configuration for a client connection.
 type Options struct {
-	// Timeout is the request timeout duration. Default: 10s.
-	Timeout time.Duration
+	// ConnectTimeout is the timeout for establishing the TCP+COTP+MMS connection. Default: 10s.
+	ConnectTimeout time.Duration
+	// RequestTimeout is the per-request timeout for send and response. Default: 10s.
+	RequestTimeout time.Duration
+	// IdleTimeout is the maximum time the background read loop waits for any
+	// data from the server before treating the connection as dead. Default: 0 (no limit).
+	IdleTimeout time.Duration
 	// LocalAddress is the optional local IP and port to bind to.
 	LocalAddress string
 	// LocalPort is the local TCP port. -1 = OS-assigned.
@@ -88,8 +93,9 @@ type Options struct {
 // DefaultOptions returns sensible default options.
 func DefaultOptions() Options {
 	return Options{
-		Timeout:   10 * time.Second,
-		LocalPort: -1,
+		ConnectTimeout: 10 * time.Second,
+		RequestTimeout: 10 * time.Second,
+		LocalPort:      -1,
 	}
 }
 
@@ -189,8 +195,8 @@ func DialWithOptions(address string, opts Options, ctxArgs ...context.Context) (
 		}
 		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(opts.LocalAddress), Port: port}
 	}
-	if opts.Timeout > 0 {
-		dialer.Timeout = opts.Timeout
+	if opts.ConnectTimeout > 0 {
+		dialer.Timeout = opts.ConnectTimeout
 	}
 
 	cotpOpts := cotp.DefaultOptions()
@@ -724,15 +730,19 @@ func (c *IedConnection) sendAndReceive(invokeID uint32, reqPDU []byte) ([]byte, 
 		c.pendingMu.Unlock()
 	}()
 
+	timeout := c.opts.RequestTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+
+	// Set write deadline so a stalled TCP send does not block forever.
+	_ = c.cotpConn.SetWriteDeadline(time.Now().Add(timeout))
+	defer c.cotpConn.SetWriteDeadline(time.Time{}) //nolint:errcheck
+
 	// Wrap MMS PDU in Presentation User Data + Session Data SPDU
 	wrapped := isosession.WrapDataSPDU(isopresentation.WrapUserData(reqPDU))
 	if err := c.cotpConn.Send(wrapped); err != nil {
 		return nil, fmt.Errorf("iec61850 client: send request: %w", err)
-	}
-
-	timeout := c.opts.Timeout
-	if timeout <= 0 {
-		timeout = 10 * time.Second
 	}
 
 	select {
@@ -756,6 +766,11 @@ func (c *IedConnection) readLoop() {
 		case <-c.ctx.Done():
 			return
 		default:
+		}
+
+		// Apply a rolling idle deadline if configured.
+		if c.opts.IdleTimeout > 0 {
+			_ = c.cotpConn.SetReadDeadline(time.Now().Add(c.opts.IdleTimeout))
 		}
 
 		raw, err := c.cotpConn.Receive()
