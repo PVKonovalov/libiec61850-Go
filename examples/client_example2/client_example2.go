@@ -31,15 +31,18 @@
 //
 // Usage:
 //
-//	./client_example1 [host] [port]
+//	./client_example2 [host] [port]
 //
 // Default host: localhost, Default port: 102
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
 	"time"
 
 	"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/client"
@@ -63,10 +66,13 @@ func main() {
 		}
 	}
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	address := fmt.Sprintf("%s:%d", host, port)
 	fmt.Printf("Connecting to %s\n", address)
 
-	conn, err := client.Dial(address)
+	conn, err := client.DialContext(ctx, address, client.DefaultOptions())
 	if err != nil {
 		fmt.Printf("Failed to connect to %s: %v\n", address, err)
 		return
@@ -159,7 +165,12 @@ func main() {
 			fmt.Printf("error triggering GI report: %v\n", err)
 		}
 
-		time.Sleep(60 * time.Second)
+		// Wait for Ctrl+C or 60 s, whichever comes first.
+		select {
+		case <-ctx.Done():
+			fmt.Println("interrupted, shutting down")
+		case <-time.After(60 * time.Second):
+		}
 
 		// Disable reporting
 		rcb.RptEna = false

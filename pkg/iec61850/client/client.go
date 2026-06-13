@@ -44,6 +44,7 @@
 package client
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"sync"
@@ -143,22 +144,40 @@ type IedConnection struct {
 
 	// channel for receiving PDUs from the background reader
 	readErr chan error
+
+	// context for cancelling background goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // Dial creates a new IEC 61850 connection to the given server address (host:port).
 // It performs the full COTP + ACSE + MMS handshake.
 func Dial(address string) (*IedConnection, error) {
-	return DialWithOptions(address, DefaultOptions())
+	return DialContext(context.Background(), address, DefaultOptions())
+}
+
+// DialContext creates a new IEC 61850 connection with a context for cancellation.
+// Cancelling ctx closes the connection and stops all background goroutines.
+func DialContext(ctx context.Context, address string, opts Options) (*IedConnection, error) {
+	return DialWithOptions(address, opts, ctx)
 }
 
 // DialWithOptions creates a connection with custom options.
-func DialWithOptions(address string, opts Options) (*IedConnection, error) {
+// An optional context may be provided as an extra argument; if omitted, context.Background() is used.
+func DialWithOptions(address string, opts Options, ctxArgs ...context.Context) (*IedConnection, error) {
+	parent := context.Background()
+	if len(ctxArgs) > 0 && ctxArgs[0] != nil {
+		parent = ctxArgs[0]
+	}
+	ctx, cancel := context.WithCancel(parent)
 	c := &IedConnection{
 		opts:           opts,
 		state:          StateConnecting,
 		pending:        make(map[uint32]*outstandingCall),
 		reportHandlers: make(map[string]*reportSubscription),
 		readErr:        make(chan error, 1),
+		ctx:            ctx,
+		cancel:         cancel,
 	}
 
 	// Establish TCP + COTP connection
@@ -251,6 +270,9 @@ func (c *IedConnection) Close() error {
 	}
 	c.state = StateClosing
 	c.mu.Unlock()
+
+	// Cancel context to unblock background goroutines.
+	c.cancel()
 
 	// Send MMS Conclude Request wrapped in Session+Presentation
 	concludeReq := mms.EncodeConcludeRequest()
@@ -720,14 +742,30 @@ func (c *IedConnection) sendAndReceive(invokeID uint32, reqPDU []byte) ([]byte, 
 		return nil, err
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("iec61850 client: request timeout (invokeID=%d)", invokeID)
+	case <-c.ctx.Done():
+		return nil, fmt.Errorf("iec61850 client: connection closed: %w", c.ctx.Err())
 	}
 }
 
 // readLoop is the background goroutine that reads incoming PDUs and dispatches them.
+// It exits when the connection is closed or the context is cancelled.
 func (c *IedConnection) readLoop() {
 	for {
+		// Check for cancellation before blocking on Receive.
+		select {
+		case <-c.ctx.Done():
+			return
+		default:
+		}
+
 		raw, err := c.cotpConn.Receive()
 		if err != nil {
+			// If context was canceled, exit silently — Close() triggered this.
+			select {
+			case <-c.ctx.Done():
+				return
+			default:
+			}
 			c.mu.Lock()
 			c.state = StateClosed
 			c.mu.Unlock()
