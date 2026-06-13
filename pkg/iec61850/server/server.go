@@ -135,7 +135,7 @@ func (s *IedServer) SetReadAccessHandler(h ReadAccessHandler) {
 
 // Start begins accepting connections on the given TCP port.
 // It spawns a background goroutine for the accept loop.
-func (s *IedServer) Start(port int) error {
+func (s *IedServer) Start(address string, port int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -143,7 +143,7 @@ func (s *IedServer) Start(port int) error {
 		return fmt.Errorf("iec61850 server: already running")
 	}
 
-	addr := fmt.Sprintf(":%d", port)
+	addr := fmt.Sprintf("%s:%d", address, port)
 	l, err := cotp.ListenTCP(addr, cotp.DefaultOptions())
 	if err != nil {
 		return fmt.Errorf("iec61850 server: listen on %s: %w", addr, err)

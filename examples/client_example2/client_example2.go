@@ -1,5 +1,5 @@
 /*
- *  main.go
+ *  client_example2.go
  *
  *  Copyright 2014-2024 Michael Zillgith
  *  Copyright 2026 Pavel Konovalov Golang port
@@ -22,7 +22,7 @@
  *  See COPYING file for the complete license text.
  */
 
-// client_example1 demonstrates basic IEC 61850 MMS client operations:
+// client_example2 demonstrates basic IEC 61850 MMS client operations:
 // reading a data attribute, writing a value, reading a data set, and
 // subscribing to a report control block.
 //
@@ -69,7 +69,6 @@ func main() {
 	conn, err := client.Dial(address)
 	if err != nil {
 		fmt.Printf("Failed to connect to %s: %v\n", address, err)
-		time.Sleep(60 * time.Second)
 		return
 	}
 	defer conn.Close()
@@ -78,7 +77,7 @@ func main() {
 
 	// ---- Read an analog measurement value ----
 	value, err := conn.ReadObject(
-		"simpleIOGenericIO/GGIO1.AnIn1.mag.f",
+		"STRATON_IEDLDevice/MMXU1.TotW.mag.f",
 		common.FC_MX,
 	)
 	if err != nil {
@@ -97,16 +96,18 @@ func main() {
 	// ---- Write a visible string to the server ----
 	writeVal := mms.NewVisibleString("libiec61850-Go")
 	err = conn.WriteObject(
-		"simpleIOGenericIO/GGIO1.NamPlt.vendor",
+		"STRATON_IEDLDevice/DPMC1.NamPlt.vendor",
 		common.FC_DC,
 		writeVal,
 	)
 	if err != nil {
-		fmt.Printf("failed to write simpleIOGenericIO/GGIO1.NamPlt.vendor: %v\n", err)
+		fmt.Printf("failed to write STRATON_IEDLDevice/DPMC1.NamPlt.vendor: %v\n", err)
+	} else {
+		fmt.Printf("written value: %s\n", writeVal)
 	}
 
 	// ---- Read a data set ----
-	dataSet, err := conn.ReadDataSetValues("simpleIOGenericIO/LLN0.Events", nil)
+	dataSet, err := conn.ReadDataSetValues("STRATON_IEDLDevice/MMXU1$DSMMXU", nil)
 	if err != nil {
 		fmt.Printf("failed to read dataset: %v\n", err)
 		goto close_connection
@@ -115,7 +116,7 @@ func main() {
 
 	// ---- Subscribe to reports ----
 	{
-		rcb, err := conn.GetRCBValues("simpleIOGenericIO/LLN0.RP.EventsRCB01")
+		rcb, err := conn.GetRCBValues("STRATON_IEDLDevice/MMXU1$RP$urcbMX02")
 		if err != nil {
 			fmt.Printf("failed to get RCB values: %v\n", err)
 			goto close_connection
@@ -125,15 +126,16 @@ func main() {
 
 		// Install report handler
 		conn.InstallReportHandler(
-			"simpleIOGenericIO/LLN0.RP.EventsRCB01",
+			"STRATON_IEDLDevice/MMXU1$RP$urcbMX02",
 			rcb.RptID,
 			reportCallbackFunction,
 		)
 
 		// Configure and enable reporting
-		rcb.TrgOps = common.TriggerDataUpdate | common.TriggerIntegrity | common.TriggerGI
+		rcb.TrgOps = common.TriggerDataChanged | common.TriggerDataUpdate | common.TriggerIntegrity | common.TriggerGI
 		rcb.RptEna = true
-		rcb.IntgPd = 5000
+		rcb.IntgPd = 0
+		//rcb.DataSetRef = "STRATON_IEDLDevice/MMXU1$DSMMXU"
 
 		err = conn.SetRCBValues(rcb,
 			client.RCBElementRptEna|client.RCBElementTrgOps|client.RCBElementIntgPd,
@@ -141,6 +143,8 @@ func main() {
 		)
 		if err != nil {
 			fmt.Printf("report activation failed: %v\n", err)
+		} else {
+			fmt.Printf("report activated\n")
 		}
 
 		time.Sleep(1 * time.Second)
@@ -185,10 +189,47 @@ func reportCallbackFunction(report *client.Report) {
 		if elem == nil {
 			continue
 		}
-		val := false
-		if elem.Type() == mms.TypeBoolean {
-			val = elem.GetBoolean()
-		}
-		fmt.Printf("  GGIO1.SPCSO%d.stVal: %v (included for reason %d)\n", i, val, reason)
+
+		value, quality, ts := extractMeasurement(elem)
+		fmt.Printf("  Object: DataPoint_%d, Value: %f, Quality: %d, Timestamp: %s\n",
+			i, value, quality, ts.Format("2006-01-02 15:04:05.000 -0700 MST"))
 	}
+}
+
+// extractMeasurement pulls (mag.f, quality, timestamp) from an IEC 61850 analogue
+// measurement STRUCTURE of the form { mag{f:FLOAT}, q:BIT-STRING, t:UTC-TIME }.
+func extractMeasurement(elem *mms.Value) (value float64, quality uint16, ts time.Time) {
+	if elem == nil || elem.Type() != mms.TypeStructure || elem.Size() < 3 {
+		return
+	}
+
+	// [0] mag — nested STRUCTURE with a single FLOAT member
+	if mag := elem.GetElement(0); mag != nil {
+		switch mag.Type() {
+		case mms.TypeStructure:
+			if mag.Size() > 0 {
+				if f := mag.GetElement(0); f != nil && f.Type() == mms.TypeFloat {
+					value = f.GetFloat64()
+				}
+			}
+		case mms.TypeFloat:
+			value = mag.GetFloat64()
+		}
+	}
+
+	// [1] q — quality as big-endian uint16 from the BitString bytes
+	if q := elem.GetElement(1); q != nil && q.Type() == mms.TypeBitString {
+		bits, _ := q.GetBitString()
+		if len(bits) >= 2 {
+			quality = uint16(bits[0])<<8 | uint16(bits[1])
+		} else if len(bits) == 1 {
+			quality = uint16(bits[0])
+		}
+	}
+
+	// [2] t — UTC timestamp converted to local time
+	if t := elem.GetElement(2); t != nil && t.Type() == mms.TypeUTCTime {
+		ts = t.GetUTCTime().ToTime().Local()
+	}
+	return
 }

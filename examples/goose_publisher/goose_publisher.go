@@ -1,5 +1,5 @@
 /*
- *  main.go
+ *  client_example2.go
  *
  *  Copyright 2014-2024 Michael Zillgith
  *  Copyright 2026 Pavel Konovalov Golang port

@@ -1,5 +1,5 @@
 /*
- *  main.go
+ *  client_example2.go
  *
  *  Copyright 2014-2024 Michael Zillgith
  *  Copyright 2026 Pavel Konovalov Golang port
@@ -66,7 +66,7 @@ func main() {
 	// ---- Create and start the server ----
 	iedServer := server.NewIedServer(iedModel, nil)
 
-	if err := iedServer.Start(port); err != nil {
+	if err := iedServer.Start("0.0.0.0", port); err != nil {
 		fmt.Printf("Starting server failed: %v\n", err)
 		os.Exit(1)
 	}
