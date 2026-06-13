@@ -4,7 +4,7 @@ A native Go implementation of the IEC 61850 communication standard for
 power system automation (MMS client/server, GOOSE, Sampled Values).
 
 This library implements the IEC 61850 protocol stack from scratch in Go —
-no CGo, no bindings. It is a port and re-implementation of
+no CGo, no bindings. It is a Golang port and re-implementation of
 [libiec61850](https://github.com/mz-automation/libiec61850).
 
 ---
