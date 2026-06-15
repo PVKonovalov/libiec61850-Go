@@ -163,168 +163,172 @@ func BuildModel() *imodel.IedModel {
 	da61.Value = mms.NewUTCTime(mms.UTCTime{})
 
 	do62 := imodel.NewDataObject("TotWh", ln33)
-	da63 := imodel.NewDataAttribute("mag", common.FC_MX, common.TypeFLOAT32, do62)
+	da63 := imodel.NewDataAttribute("mag", common.FC_MX, common.TypeConstructed, do62)
 	da63.TriggerOptions = common.TriggerDataChanged
-	da63.Value = mms.NewFloat32(0)
-	da64 := imodel.NewDataAttribute("q", common.FC_MX, common.TypeQuality, do62)
-	da64.TriggerOptions = common.TriggerQualityChanged
-	da64.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da65 := imodel.NewDataAttribute("t", common.FC_MX, common.TypeTimestamp, do62)
-	da65.Value = mms.NewUTCTime(mms.UTCTime{})
+	da64 := imodel.NewSubDataAttribute("f", common.FC_MX, common.TypeFLOAT32, da63)
+	da64.TriggerOptions = common.TriggerDataChanged
+	da64.Value = mms.NewFloat32(0)
+	da65 := imodel.NewDataAttribute("q", common.FC_MX, common.TypeQuality, do62)
+	da65.TriggerOptions = common.TriggerQualityChanged
+	da65.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da66 := imodel.NewDataAttribute("t", common.FC_MX, common.TypeTimestamp, do62)
+	da66.Value = mms.NewUTCTime(mms.UTCTime{})
 
 	// Logical Node: DSCH1
-	ln66 := imodel.NewLogicalNode("DSCH1", ld1)
+	ln67 := imodel.NewLogicalNode("DSCH1", ld1)
 
-	do67 := imodel.NewDataObject("Mod", ln66)
-	da68 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do67)
-	da68.TriggerOptions = common.TriggerQualityChanged
-	da68.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da69 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do67)
-	da69.Value = mms.NewUTCTime(mms.UTCTime{})
-	da70 := imodel.NewDataAttribute("ctlModel", common.FC_CF, common.TypeEnumerated, do67)
-	da70.Value = mms.NewInt32(0)
+	do68 := imodel.NewDataObject("Mod", ln67)
+	da69 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do68)
+	da69.TriggerOptions = common.TriggerQualityChanged
+	da69.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da70 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do68)
+	da70.Value = mms.NewUTCTime(mms.UTCTime{})
+	da71 := imodel.NewDataAttribute("ctlModel", common.FC_CF, common.TypeEnumerated, do68)
+	da71.Value = mms.NewInt32(0)
 
-	do71 := imodel.NewDataObject("Beh", ln66)
-	da72 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do71)
-	da72.TriggerOptions = common.TriggerDataChanged
-	da72.Value = mms.NewInt32(0)
-	da73 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do71)
-	da73.TriggerOptions = common.TriggerQualityChanged
-	da73.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da74 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do71)
-	da74.Value = mms.NewUTCTime(mms.UTCTime{})
+	do72 := imodel.NewDataObject("Beh", ln67)
+	da73 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do72)
+	da73.TriggerOptions = common.TriggerDataChanged
+	da73.Value = mms.NewInt32(0)
+	da74 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do72)
+	da74.TriggerOptions = common.TriggerQualityChanged
+	da74.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da75 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do72)
+	da75.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do75 := imodel.NewDataObject("Health", ln66)
-	da76 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do75)
-	da76.TriggerOptions = common.TriggerDataChanged
-	da76.Value = mms.NewInt32(0)
-	da77 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do75)
-	da77.TriggerOptions = common.TriggerQualityChanged
-	da77.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da78 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do75)
-	da78.Value = mms.NewUTCTime(mms.UTCTime{})
+	do76 := imodel.NewDataObject("Health", ln67)
+	da77 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do76)
+	da77.TriggerOptions = common.TriggerDataChanged
+	da77.Value = mms.NewInt32(0)
+	da78 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do76)
+	da78.TriggerOptions = common.TriggerQualityChanged
+	da78.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da79 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do76)
+	da79.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do79 := imodel.NewDataObject("NamPlt", ln66)
-	da80 := imodel.NewDataAttribute("vendor", common.FC_DC, common.TypeVisibleStr255, do79)
-	da80.Value = mms.NewVisibleString("")
-	da81 := imodel.NewDataAttribute("swRev", common.FC_DC, common.TypeVisibleStr255, do79)
+	do80 := imodel.NewDataObject("NamPlt", ln67)
+	da81 := imodel.NewDataAttribute("vendor", common.FC_DC, common.TypeVisibleStr255, do80)
 	da81.Value = mms.NewVisibleString("")
-	da82 := imodel.NewDataAttribute("d", common.FC_DC, common.TypeVisibleStr255, do79)
+	da82 := imodel.NewDataAttribute("swRev", common.FC_DC, common.TypeVisibleStr255, do80)
 	da82.Value = mms.NewVisibleString("")
+	da83 := imodel.NewDataAttribute("d", common.FC_DC, common.TypeVisibleStr255, do80)
+	da83.Value = mms.NewVisibleString("")
 
-	do83 := imodel.NewDataObject("SchdSt", ln66)
-	da84 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do83)
-	da84.TriggerOptions = common.TriggerDataChanged
-	da84.Value = mms.NewInt32(0)
-	da85 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do83)
-	da85.TriggerOptions = common.TriggerQualityChanged
-	da85.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da86 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do83)
-	da86.Value = mms.NewUTCTime(mms.UTCTime{})
+	do84 := imodel.NewDataObject("SchdSt", ln67)
+	da85 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do84)
+	da85.TriggerOptions = common.TriggerDataChanged
+	da85.Value = mms.NewInt32(0)
+	da86 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do84)
+	da86.TriggerOptions = common.TriggerQualityChanged
+	da86.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da87 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do84)
+	da87.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	imodel.NewDataObject("SchdId", ln66)
+	imodel.NewDataObject("SchdId", ln67)
 
-	imodel.NewDataObject("SchdCat", ln66)
+	imodel.NewDataObject("SchdCat", ln67)
 
-	imodel.NewDataObject("SchdTyp", ln66)
+	imodel.NewDataObject("SchdTyp", ln67)
 
-	do90 := imodel.NewDataObject("SchdAbsTm", ln66)
-	da91 := imodel.NewDataAttribute("val", common.FC_SP, common.TypeFLOAT32, do90)
-	da91.TriggerOptions = common.TriggerDataChanged
-	da91.Value = mms.NewFloat32(0)
-	da92 := imodel.NewDataAttribute("time", common.FC_SP, common.TypeTimestamp, do90)
+	do91 := imodel.NewDataObject("SchdAbsTm", ln67)
+	da92 := imodel.NewDataAttribute("val", common.FC_SP, common.TypeFLOAT32, do91)
 	da92.TriggerOptions = common.TriggerDataChanged
-	da92.Value = mms.NewUTCTime(mms.UTCTime{})
+	da92.Value = mms.NewFloat32(0)
+	da93 := imodel.NewDataAttribute("time", common.FC_SP, common.TypeTimestamp, do91)
+	da93.TriggerOptions = common.TriggerDataChanged
+	da93.Value = mms.NewUTCTime(mms.UTCTime{})
 
 	// Logical Node: MMXU1
-	ln93 := imodel.NewLogicalNode("MMXU1", ld1)
+	ln94 := imodel.NewLogicalNode("MMXU1", ld1)
 
-	do94 := imodel.NewDataObject("Mod", ln93)
-	da95 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do94)
-	da95.TriggerOptions = common.TriggerQualityChanged
-	da95.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da96 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do94)
-	da96.Value = mms.NewUTCTime(mms.UTCTime{})
-	da97 := imodel.NewDataAttribute("ctlModel", common.FC_CF, common.TypeEnumerated, do94)
-	da97.Value = mms.NewInt32(0)
+	do95 := imodel.NewDataObject("Mod", ln94)
+	da96 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do95)
+	da96.TriggerOptions = common.TriggerQualityChanged
+	da96.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da97 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do95)
+	da97.Value = mms.NewUTCTime(mms.UTCTime{})
+	da98 := imodel.NewDataAttribute("ctlModel", common.FC_CF, common.TypeEnumerated, do95)
+	da98.Value = mms.NewInt32(0)
 
-	do98 := imodel.NewDataObject("Beh", ln93)
-	da99 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do98)
-	da99.TriggerOptions = common.TriggerDataChanged
-	da99.Value = mms.NewInt32(0)
-	da100 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do98)
-	da100.TriggerOptions = common.TriggerQualityChanged
-	da100.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da101 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do98)
-	da101.Value = mms.NewUTCTime(mms.UTCTime{})
+	do99 := imodel.NewDataObject("Beh", ln94)
+	da100 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do99)
+	da100.TriggerOptions = common.TriggerDataChanged
+	da100.Value = mms.NewInt32(0)
+	da101 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do99)
+	da101.TriggerOptions = common.TriggerQualityChanged
+	da101.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da102 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do99)
+	da102.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do102 := imodel.NewDataObject("Health", ln93)
-	da103 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do102)
-	da103.TriggerOptions = common.TriggerDataChanged
-	da103.Value = mms.NewInt32(0)
-	da104 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do102)
-	da104.TriggerOptions = common.TriggerQualityChanged
-	da104.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da105 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do102)
-	da105.Value = mms.NewUTCTime(mms.UTCTime{})
+	do103 := imodel.NewDataObject("Health", ln94)
+	da104 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do103)
+	da104.TriggerOptions = common.TriggerDataChanged
+	da104.Value = mms.NewInt32(0)
+	da105 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do103)
+	da105.TriggerOptions = common.TriggerQualityChanged
+	da105.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da106 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do103)
+	da106.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do106 := imodel.NewDataObject("NamPlt", ln93)
-	da107 := imodel.NewDataAttribute("vendor", common.FC_DC, common.TypeVisibleStr255, do106)
-	da107.Value = mms.NewVisibleString("")
-	da108 := imodel.NewDataAttribute("swRev", common.FC_DC, common.TypeVisibleStr255, do106)
+	do107 := imodel.NewDataObject("NamPlt", ln94)
+	da108 := imodel.NewDataAttribute("vendor", common.FC_DC, common.TypeVisibleStr255, do107)
 	da108.Value = mms.NewVisibleString("")
-	da109 := imodel.NewDataAttribute("d", common.FC_DC, common.TypeVisibleStr255, do106)
+	da109 := imodel.NewDataAttribute("swRev", common.FC_DC, common.TypeVisibleStr255, do107)
 	da109.Value = mms.NewVisibleString("")
+	da110 := imodel.NewDataAttribute("d", common.FC_DC, common.TypeVisibleStr255, do107)
+	da110.Value = mms.NewVisibleString("")
 
 	// Logical Node: MMXU2
-	ln110 := imodel.NewLogicalNode("MMXU2", ld1)
+	ln111 := imodel.NewLogicalNode("MMXU2", ld1)
 
-	do111 := imodel.NewDataObject("Mod", ln110)
-	da112 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do111)
-	da112.TriggerOptions = common.TriggerQualityChanged
-	da112.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da113 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do111)
-	da113.Value = mms.NewUTCTime(mms.UTCTime{})
-	da114 := imodel.NewDataAttribute("ctlModel", common.FC_CF, common.TypeEnumerated, do111)
-	da114.Value = mms.NewInt32(0)
+	do112 := imodel.NewDataObject("Mod", ln111)
+	da113 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do112)
+	da113.TriggerOptions = common.TriggerQualityChanged
+	da113.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da114 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do112)
+	da114.Value = mms.NewUTCTime(mms.UTCTime{})
+	da115 := imodel.NewDataAttribute("ctlModel", common.FC_CF, common.TypeEnumerated, do112)
+	da115.Value = mms.NewInt32(0)
 
-	do115 := imodel.NewDataObject("Beh", ln110)
-	da116 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do115)
-	da116.TriggerOptions = common.TriggerDataChanged
-	da116.Value = mms.NewInt32(0)
-	da117 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do115)
-	da117.TriggerOptions = common.TriggerQualityChanged
-	da117.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da118 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do115)
-	da118.Value = mms.NewUTCTime(mms.UTCTime{})
+	do116 := imodel.NewDataObject("Beh", ln111)
+	da117 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do116)
+	da117.TriggerOptions = common.TriggerDataChanged
+	da117.Value = mms.NewInt32(0)
+	da118 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do116)
+	da118.TriggerOptions = common.TriggerQualityChanged
+	da118.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da119 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do116)
+	da119.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do119 := imodel.NewDataObject("Health", ln110)
-	da120 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do119)
-	da120.TriggerOptions = common.TriggerDataChanged
-	da120.Value = mms.NewInt32(0)
-	da121 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do119)
-	da121.TriggerOptions = common.TriggerQualityChanged
-	da121.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da122 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do119)
-	da122.Value = mms.NewUTCTime(mms.UTCTime{})
+	do120 := imodel.NewDataObject("Health", ln111)
+	da121 := imodel.NewDataAttribute("stVal", common.FC_ST, common.TypeINT32, do120)
+	da121.TriggerOptions = common.TriggerDataChanged
+	da121.Value = mms.NewInt32(0)
+	da122 := imodel.NewDataAttribute("q", common.FC_ST, common.TypeQuality, do120)
+	da122.TriggerOptions = common.TriggerQualityChanged
+	da122.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da123 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do120)
+	da123.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do123 := imodel.NewDataObject("NamPlt", ln110)
-	da124 := imodel.NewDataAttribute("vendor", common.FC_DC, common.TypeVisibleStr255, do123)
-	da124.Value = mms.NewVisibleString("")
-	da125 := imodel.NewDataAttribute("swRev", common.FC_DC, common.TypeVisibleStr255, do123)
+	do124 := imodel.NewDataObject("NamPlt", ln111)
+	da125 := imodel.NewDataAttribute("vendor", common.FC_DC, common.TypeVisibleStr255, do124)
 	da125.Value = mms.NewVisibleString("")
-	da126 := imodel.NewDataAttribute("d", common.FC_DC, common.TypeVisibleStr255, do123)
+	da126 := imodel.NewDataAttribute("swRev", common.FC_DC, common.TypeVisibleStr255, do124)
 	da126.Value = mms.NewVisibleString("")
+	da127 := imodel.NewDataAttribute("d", common.FC_DC, common.TypeVisibleStr255, do124)
+	da127.Value = mms.NewVisibleString("")
 
-	do127 := imodel.NewDataObject("TotW", ln110)
-	da128 := imodel.NewDataAttribute("mag", common.FC_MX, common.TypeFLOAT32, do127)
-	da128.TriggerOptions = common.TriggerDataChanged
-	da128.Value = mms.NewFloat32(0)
-	da129 := imodel.NewDataAttribute("q", common.FC_MX, common.TypeQuality, do127)
-	da129.TriggerOptions = common.TriggerQualityChanged
-	da129.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
-	da130 := imodel.NewDataAttribute("t", common.FC_MX, common.TypeTimestamp, do127)
-	da130.Value = mms.NewUTCTime(mms.UTCTime{})
+	do128 := imodel.NewDataObject("TotW", ln111)
+	da129 := imodel.NewDataAttribute("mag", common.FC_MX, common.TypeConstructed, do128)
+	da129.TriggerOptions = common.TriggerDataChanged
+	da130 := imodel.NewSubDataAttribute("f", common.FC_MX, common.TypeFLOAT32, da129)
+	da130.TriggerOptions = common.TriggerDataChanged
+	da130.Value = mms.NewFloat32(0)
+	da131 := imodel.NewDataAttribute("q", common.FC_MX, common.TypeQuality, do128)
+	da131.TriggerOptions = common.TriggerQualityChanged
+	da131.Value = mms.NewBitString([]byte{0x00, 0x00}, 13)
+	da132 := imodel.NewDataAttribute("t", common.FC_MX, common.TypeTimestamp, do128)
+	da132.Value = mms.NewUTCTime(mms.UTCTime{})
 
 	return iedModel
 }

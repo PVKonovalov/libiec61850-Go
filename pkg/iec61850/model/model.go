@@ -347,6 +347,22 @@ func NewDataAttribute(name string, fc common.FunctionalConstraint, attrType comm
 	return da
 }
 
+// NewSubDataAttribute creates a sub data attribute (child of a CONSTRUCTED DataAttribute).
+func NewSubDataAttribute(name string, fc common.FunctionalConstraint, attrType common.DataAttributeType, parent *DataAttribute) *DataAttribute {
+	da := &DataAttribute{
+		ArrayIndex: -1,
+		FC:         fc,
+		AttrType:   attrType,
+	}
+	da.name = name
+	da.nodeType = NodeTypeDataAttribute
+	da.parent = parent
+	if parent != nil {
+		parent.addChild(da)
+	}
+	return da
+}
+
 // Path returns the full path of this data attribute, including FC.
 func (da *DataAttribute) Path() string {
 	if da.parent == nil {

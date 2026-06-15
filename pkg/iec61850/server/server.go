@@ -458,46 +458,87 @@ func (c *serverConn) handleGetNameList(invokeID uint32, content []byte) ([]byte,
 	return mms.BuildGetNameListResponse(invokeID, names, false), nil
 }
 
-// namedVariablesForDomain returns the full MMS named-variable list for a logical device.
-// Each entry is "LN$FC$DO[$DA...]" for every leaf data attribute, matching the C library behaviour.
-// The list is sorted alphabetically so clients can use binary search / continueAfter pagination.
+// namedVariablesForDomain returns the full MMS named-variable list for a logical device,
+// matching the C library behaviour: one entry per level of the hierarchy.
+//
+//	LN$FC
+//	LN$FC$DO
+//	LN$FC$DO$DA            (leaf)
+//	LN$FC$DO$constructedDA
+//	LN$FC$DO$constructedDA$subDA  (leaf)
+//
+// The list is sorted alphabetically for deterministic continueAfter pagination.
 func (c *serverConn) namedVariablesForDomain(domainID string) []string {
 	ld := c.findLD(domainID)
 	if ld == nil {
 		return nil
 	}
+
+	// Collect ordered unique FCs for each LN so we emit FC-level entries.
 	var names []string
 	for _, ln := range ld.LogicalNodes() {
+		lnName := ln.Name()
+
+		// Discover which FCs are present and which DOs belong to each FC.
+		type doFC struct {
+			do *model.DataObject
+			fc common.FunctionalConstraint
+		}
+		fcOrder := []common.FunctionalConstraint{}
+		fcSeen := map[common.FunctionalConstraint]bool{}
+		fcDOs := map[common.FunctionalConstraint][]*model.DataObject{}
+
 		for _, do := range ln.DataObjects() {
-			collectNamedVariables(ln.Name(), do, &names)
+			doFCs := map[common.FunctionalConstraint]bool{}
+			for _, child := range do.Children() {
+				if da, ok := child.(*model.DataAttribute); ok {
+					doFCs[da.FC] = true
+				}
+			}
+			for fc := range doFCs {
+				if !fcSeen[fc] {
+					fcSeen[fc] = true
+					fcOrder = append(fcOrder, fc)
+				}
+				fcDOs[fc] = append(fcDOs[fc], do)
+			}
+		}
+
+		// Sort FCs for deterministic output.
+		sort.Slice(fcOrder, func(i, j int) bool {
+			return fcOrder[i].String() < fcOrder[j].String()
+		})
+
+		for _, fc := range fcOrder {
+			fcStr := fc.String()
+			names = append(names, lnName+"$"+fcStr)
+
+			for _, do := range fcDOs[fc] {
+				doPrefix := lnName + "$" + fcStr + "$" + do.Name()
+				names = append(names, doPrefix)
+
+				for _, child := range do.Children() {
+					da, ok := child.(*model.DataAttribute)
+					if !ok || da.FC != fc {
+						continue
+					}
+					collectDANames(doPrefix, da, &names)
+				}
+			}
 		}
 	}
+
 	sort.Strings(names)
 	return names
 }
 
-// collectNamedVariables appends "LN$FC$DO[$DA...]" entries for every leaf DA under do.
-func collectNamedVariables(lnName string, do *model.DataObject, out *[]string) {
-	for _, child := range do.Children() {
-		switch n := child.(type) {
-		case *model.DataAttribute:
-			collectDAVariables(lnName+"$"+n.FC.String()+"$"+do.Name(), n, out)
-		case *model.DataObject:
-			collectNamedVariables(lnName, n, out)
-		}
-	}
-}
-
-// collectDAVariables appends one entry per leaf DA (recursing into sub-DAs).
-func collectDAVariables(prefix string, da *model.DataAttribute, out *[]string) {
-	subs := da.Children()
-	if len(subs) == 0 {
-		*out = append(*out, prefix+"$"+da.Name())
-		return
-	}
-	for _, child := range subs {
+// collectDANames emits one entry for the DA itself, then recurses into any sub-DAs.
+func collectDANames(prefix string, da *model.DataAttribute, out *[]string) {
+	daPath := prefix + "$" + da.Name()
+	*out = append(*out, daPath)
+	for _, child := range da.Children() {
 		if sub, ok := child.(*model.DataAttribute); ok {
-			collectDAVariables(prefix+"$"+da.Name(), sub, out)
+			collectDANames(daPath, sub, out)
 		}
 	}
 }
@@ -667,8 +708,22 @@ func buildTypeSpecDAsAsStructure(das []*model.DataAttribute) []byte {
 	return mms.TypeSpecStructure(comps)
 }
 
-// buildTypeSpecDA maps a DataAttribute type to its MMS TypeSpecification bytes.
+// buildTypeSpecDA maps a DataAttribute to its MMS TypeSpecification bytes.
+// For CONSTRUCTED DAs (TypeConstructed or any DA with sub-DA children), emits a STRUCTURE.
 func buildTypeSpecDA(da *model.DataAttribute) []byte {
+	// If the DA has sub-DA children it is CONSTRUCTED regardless of AttrType.
+	if subs := da.Children(); len(subs) > 0 {
+		var comps []mms.TypeSpecComponent
+		for _, child := range subs {
+			if sub, ok := child.(*model.DataAttribute); ok {
+				comps = append(comps, mms.TypeSpecComponent{
+					Name:     sub.Name(),
+					TypeSpec: buildTypeSpecDA(sub),
+				})
+			}
+		}
+		return mms.TypeSpecStructure(comps)
+	}
 	switch da.AttrType {
 	case common.TypeBoolean:
 		return mms.TypeSpecBoolean()
@@ -833,11 +888,7 @@ func buildStructureByFC(ln *model.LogicalNode, fc string) (*mms.Value, error) {
 			if !ok || da.FC.String() != fc {
 				continue
 			}
-			if da.Value != nil {
-				dMembers = append(dMembers, da.Value)
-			} else {
-				dMembers = append(dMembers, mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable))
-			}
+			dMembers = append(dMembers, buildValueFromDA(da))
 			found = true
 		}
 		if len(dMembers) > 0 {
@@ -893,16 +944,31 @@ func buildStructureFromDO(do *model.DataObject) *mms.Value {
 	for _, child := range do.Children() {
 		switch n := child.(type) {
 		case *model.DataAttribute:
-			if n.Value != nil {
-				members = append(members, n.Value)
-			} else {
-				members = append(members, mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable))
-			}
+			members = append(members, buildValueFromDA(n))
 		case *model.DataObject:
 			members = append(members, buildStructureFromDO(n))
 		}
 	}
 	return mms.NewStructure(members)
+}
+
+// buildValueFromDA returns the MMS value for a DataAttribute.
+// CONSTRUCTED DAs (those with sub-DA children) yield a nested STRUCTURE.
+func buildValueFromDA(da *model.DataAttribute) *mms.Value {
+	subs := da.Children()
+	if len(subs) > 0 {
+		var members []*mms.Value
+		for _, child := range subs {
+			if sub, ok := child.(*model.DataAttribute); ok {
+				members = append(members, buildValueFromDA(sub))
+			}
+		}
+		return mms.NewStructure(members)
+	}
+	if da.Value != nil {
+		return da.Value
+	}
+	return mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable)
 }
 
 // buildStructureFromLN builds an MMS STRUCTURE value from all DOs in a LogicalNode.
