@@ -53,6 +53,7 @@ const (
 // ParseConfirmedRequest parses a ConfirmedRequestPDU and returns the
 // invokeID, service tag, and service-specific content.
 func ParseConfirmedRequest(buf []byte) (invokeID uint32, svcTag int, svcContent []byte, err error) {
+	DebugHex("server: ConfirmedRequest recv", buf)
 	if len(buf) < 2 || buf[0] != tagConfirmedRequest {
 		return 0, 0, nil, fmt.Errorf("mms: expected ConfirmedRequestPDU, got 0x%02X", buf[0])
 	}
@@ -88,6 +89,7 @@ func ParseConfirmedRequest(buf []byte) (invokeID uint32, svcTag int, svcContent 
 // ParseAARQ parses an ACSE AARQ PDU received by the server.
 // Returns the MMS user data extracted from the user-information field.
 func ParseAARQ(buf []byte) ([]byte, error) {
+	DebugHex("server: AARQ recv", buf)
 	if len(buf) < 2 {
 		return nil, fmt.Errorf("mms: AARQ too short")
 	}
@@ -140,6 +142,59 @@ func extractMmsFromUserInfo(buf []byte) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("mms: single-ASN1-type (0xa0) not found in AARQ user-information")
+}
+
+// ParseGetNameListRequestContent parses the content bytes of a GetNameList request.
+// The C library uses tag [2] for continueAfter (non-standard); we also accept [5] per ISO 9506-2.
+func ParseGetNameListRequestContent(content []byte) (*GetNameListRequest, error) {
+	req := &GetNameListRequest{ObjectClass: -1, ObjectScope: ObjectScopeType(ObjectScopeVMD)}
+	pos := 0
+	for pos < len(content) {
+		tlv, newPos, err := asn1ber.ParseTLV(content, pos)
+		if err != nil {
+			return req, nil
+		}
+		pos = newPos
+		if tlv.Class != asn1ber.ClassContext {
+			continue
+		}
+		switch tlv.Tag {
+		case 0: // objectClass: [0] CONSTRUCTED { [0] integer }
+			inner, _, err := asn1ber.ParseTLV(tlv.Value, 0)
+			if err == nil && inner.Class == asn1ber.ClassContext && inner.Tag == 0 {
+				v, _ := asn1ber.DecodeInteger(inner.Value)
+				req.ObjectClass = ObjectClassType(v)
+			}
+		case 1: // objectScope: [1] CONSTRUCTED { choice }
+			innerPos := 0
+			for innerPos < len(tlv.Value) {
+				inner, newInner, err := asn1ber.ParseTLV(tlv.Value, innerPos)
+				if err != nil {
+					break
+				}
+				innerPos = newInner
+				if inner.Class != asn1ber.ClassContext {
+					continue
+				}
+				switch inner.Tag {
+				case 0: // vmdSpecific NULL
+					req.ObjectScope = ObjectScopeType(ObjectScopeVMD)
+				case 1: // domainSpecific: Identifier (the domain name)
+					req.ObjectScope = ObjectScopeType(ObjectScopeDomain)
+					req.DomainID = string(inner.Value)
+				case 2: // aaSpecific NULL
+					req.ObjectScope = ObjectScopeType(ObjectScopeAssoc)
+				}
+			}
+		case 2: // continueAfter — C library non-standard tag (libiec61850 uses [2], standard says [5])
+			req.ContinueAfter = string(tlv.Value)
+		case 5: // continueAfter — ISO 9506-2 standard tag
+			req.ContinueAfter = string(tlv.Value)
+		}
+	}
+	debugf("server: GetNameList objectClass=%d scope=%d domain=%q continueAfter=%q",
+		req.ObjectClass, req.ObjectScope, req.DomainID, req.ContinueAfter)
+	return req, nil
 }
 
 // ParseReadRequestContent parses the content of a Read confirmed service request.
@@ -283,12 +338,19 @@ func parseVariableSpec(content []byte) (VariableSpecification, error) {
 	return spec, nil
 }
 
+// ParseGetVarAccessAttributesRequest parses the content bytes of a GetVariableAccessAttributes request.
+// The request content is a VariableSpecification CHOICE, identical to what parseVariableSpec handles.
+func ParseGetVarAccessAttributesRequest(content []byte) (VariableSpecification, error) {
+	return parseVariableSpec(content)
+}
+
 // appContextNameMMS is the OID content bytes for the IEC 61850 MMS application context (1.0.9506.2.3).
 var appContextNameMMS = []byte{0x28, 0xCA, 0x22, 0x02, 0x03}
 
 // BuildAARE builds an ACSE AARE (Association Response) PDU wrapping the MMS initiate response.
 // Uses the libiec61850-compatible EXTERNAL (0x28) wrapping for user-information.
 func BuildAARE(mmsResponse []byte) []byte {
+	debugf("server: building AARE with MMS initiate response (%d bytes)", len(mmsResponse))
 	var body []byte
 
 	// [1] application-context-name
@@ -319,23 +381,140 @@ func BuildAARE(mmsResponse []byte) []byte {
 
 // ---- Response builders ----
 
-// BuildErrorResponse builds a minimal MMS error response PDU.
+// BuildErrorResponse builds a ConfirmedErrorPDU matching the libiec61850 C wire format:
+//
+//	0xa2 len {
+//	  0x80 len invokeId          // [0] invokeID (always present)
+//	  0xa2 len {                 // [2] serviceError
+//	    0xa0 3 {                 // [0] errorClass
+//	      errClassTag 0x01 val   // e.g. 0x84=service, 0x87=access, 0x8c=others
+//	    }
+//	  }
+//	}
 func BuildErrorResponse(invokeID uint32, mmsErr Error) []byte {
-	var body []byte
-	if invokeID > 0 {
-		body = append(body, asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(int64(invokeID)))...)
-	}
-	// [1] serviceError
-	errContent := asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(int64(mmsErr)))
-	body = append(body, asn1ber.EncodeContextTLV(1, true, errContent)...)
+	errClassTag, errVal := errorToClassTag(mmsErr)
 
+	// errorClass: [0] CONSTRUCTED { classTag 0x01 val }
+	errorClass := asn1ber.EncodeContextTLV(0, true, []byte{errClassTag, 0x01, errVal})
+
+	// serviceError: [2] CONSTRUCTED { errorClass }
+	serviceError := asn1ber.EncodeContextTLV(2, true, errorClass)
+
+	// invokeID: [0] PRIMITIVE
+	invokeIDBytes := asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(int64(invokeID)))
+
+	body := append(invokeIDBytes, serviceError...)
 	return appendTagLength(tagConfirmedError, body)
+}
+
+// errorToClassTag maps an mms.Error to the C library's (errorClassTag, value) pair.
+func errorToClassTag(mmsErr Error) (tag byte, val byte) {
+	switch mmsErr {
+	case ErrAccessObjectAccessUnsupported:
+		return 0x87, 1 // access[1] object-access-unsupported
+	case ErrAccessObjectNonExistent:
+		return 0x87, 2 // access[2] object-non-existent
+	case ErrAccessObjectAccessDenied:
+		return 0x87, 3 // access[3] object-access-denied
+	case ErrDefinitionTypeUnsupported:
+		return 0x82, 3 // definition[3] type-unsupported
+	case ErrDefinitionObjectUndefined:
+		return 0x82, 1 // definition[1] object-undefined
+	default:
+		return 0x84, 0 // service[0] other
+	}
 }
 
 // BuildServiceErrorResponse builds a confirmed error PDU for a specific service.
 func BuildServiceErrorResponse(invokeID uint32, mmsErr Error) []byte {
 	return BuildErrorResponse(invokeID, mmsErr)
 }
+
+// BuildGetVarAccessAttributesResponse builds a GetVariableAccessAttributes response.
+// typeSpecBytes is the BER-encoded TypeSpecification content (already built by the caller).
+func BuildGetVarAccessAttributesResponse(invokeID uint32, typeSpecBytes []byte) []byte {
+	var svcBody []byte
+	// [0] IMPLICIT BOOLEAN mmsDeletable = false
+	svcBody = append(svcBody, asn1ber.EncodeContextTLV(0, false, []byte{0x00})...)
+	// [2] EXPLICIT TypeSpecification
+	svcBody = append(svcBody, asn1ber.EncodeContextTLV(2, true, typeSpecBytes)...)
+	// Service tag [6] = svcGetVariableAccessAttributes CONSTRUCTED
+	svcTag := appendTagLength(byte(svcGetVariableAccessAttributes|asn1ber.ClassContext|asn1ber.Constructed), svcBody)
+	return buildConfirmedResponse(invokeID, svcTag)
+}
+
+// --- TypeSpecification encoding helpers ---
+
+// TypeSpecStructure encodes an MMS structure TypeSpecification with named components.
+// Each component is a (name, typeSpec) pair; typeSpec is the already-encoded child TypeSpec.
+func TypeSpecStructure(components []TypeSpecComponent) []byte {
+	var compBody []byte
+	for _, c := range components {
+		// StructComponent is UNIVERSAL SEQUENCE { [0] name, [1] EXPLICIT typeSpec }
+		var sc []byte
+		sc = append(sc, asn1ber.EncodeContextTLV(0, false, []byte(c.Name))...)
+		sc = append(sc, asn1ber.EncodeContextTLV(1, true, c.TypeSpec)...)
+		compBody = append(compBody, asn1ber.EncodeTLV(asn1ber.ClassUniversal, true, asn1ber.TagSequence, sc)...)
+	}
+	// [1] IMPLICIT SEQUENCE OF components
+	comps := asn1ber.EncodeContextTLV(1, true, compBody)
+	// [2] IMPLICIT structure
+	return asn1ber.EncodeContextTLV(2, true, comps)
+}
+
+// TypeSpecComponent is one named member of a structure TypeSpecification.
+type TypeSpecComponent struct {
+	Name     string
+	TypeSpec []byte
+}
+
+// TypeSpecBoolean encodes an MMS boolean TypeSpecification.
+func TypeSpecBoolean() []byte { return asn1ber.EncodeContextTLV(3, false, nil) }
+
+// TypeSpecBitString encodes an MMS bit-string TypeSpecification (negative = fixed size).
+func TypeSpecBitString(bits int) []byte {
+	return asn1ber.EncodeContextTLV(4, false, asn1ber.EncodeIntegerContent(int64(bits)))
+}
+
+// TypeSpecFloat32 encodes an MMS 32-bit floating-point TypeSpecification.
+func TypeSpecFloat32() []byte {
+	// [7] CONSTRUCTED SEQUENCE { INTEGER formatwidth=32, INTEGER exponentwidth=8 }
+	var body []byte
+	body = append(body, asn1ber.EncodeInteger(32)...)
+	body = append(body, asn1ber.EncodeInteger(8)...)
+	return asn1ber.EncodeContextTLV(7, true, body)
+}
+
+// TypeSpecFloat64 encodes an MMS 64-bit floating-point TypeSpecification.
+func TypeSpecFloat64() []byte {
+	var body []byte
+	body = append(body, asn1ber.EncodeInteger(64)...)
+	body = append(body, asn1ber.EncodeInteger(11)...)
+	return asn1ber.EncodeContextTLV(7, true, body)
+}
+
+// TypeSpecInteger encodes an MMS signed integer TypeSpecification (size in bytes).
+func TypeSpecInteger(bytes int) []byte {
+	return asn1ber.EncodeContextTLV(5, false, asn1ber.EncodeIntegerContent(int64(bytes)))
+}
+
+// TypeSpecUnsigned encodes an MMS unsigned integer TypeSpecification (size in bytes).
+func TypeSpecUnsigned(bytes int) []byte {
+	return asn1ber.EncodeContextTLV(6, false, asn1ber.EncodeIntegerContent(int64(bytes)))
+}
+
+// TypeSpecVisibleString encodes an MMS visible-string TypeSpecification (max length).
+func TypeSpecVisibleString(maxLen int) []byte {
+	return asn1ber.EncodeContextTLV(10, false, asn1ber.EncodeIntegerContent(int64(maxLen)))
+}
+
+// TypeSpecOctetString encodes an MMS octet-string TypeSpecification (max bytes).
+func TypeSpecOctetString(maxBytes int) []byte {
+	return asn1ber.EncodeContextTLV(9, false, asn1ber.EncodeIntegerContent(int64(maxBytes)))
+}
+
+// TypeSpecUTCTime encodes an MMS UTC-time TypeSpecification.
+func TypeSpecUTCTime() []byte { return asn1ber.EncodeContextTLV(17, false, nil) }
 
 // BuildReadResponse builds a ConfirmedResponsePDU for a Read service.
 func BuildReadResponse(invokeID uint32, results []*ReadResult) []byte {
@@ -381,12 +560,19 @@ func BuildWriteResponse(invokeID uint32, results []WriteResult) []byte {
 
 // BuildGetNameListResponse builds a GetNameList response PDU.
 func BuildGetNameListResponse(invokeID uint32, names []string, moreFollows bool) []byte {
-	var listBody []byte
+	// [0] listOfIdentifier: SEQUENCE OF Identifier (VisibleString per ISO 9506-2)
+	var identifiers []byte
 	for _, name := range names {
-		listBody = append(listBody, asn1ber.EncodeContextTLV(0, false, []byte(name))...)
+		identifiers = append(identifiers, asn1ber.EncodeVisibleString(name)...)
 	}
+	var listBody []byte
+	listBody = append(listBody, asn1ber.EncodeContextTLV(0, true, identifiers)...)
+	// moreFollows has DEFAULT TRUE per ISO 9506-2, so FALSE must be encoded explicitly —
+	// an absent field means TRUE, causing clients to loop forever requesting more pages.
 	if moreFollows {
 		listBody = append(listBody, asn1ber.EncodeContextTLV(1, false, []byte{0xFF})...)
+	} else {
+		listBody = append(listBody, asn1ber.EncodeContextTLV(1, false, []byte{0x00})...)
 	}
 
 	svcBody := appendTagLength(byte(svcGetNameList|asn1ber.ClassContext|asn1ber.Constructed), listBody)

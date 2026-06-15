@@ -44,6 +44,8 @@ package server
 import (
 	"fmt"
 	"net"
+	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -278,8 +280,8 @@ func (c *serverConn) handle() {
 	}
 
 	// Accept with default MMS parameters
-	_, _, _ = mms.ParseInitiateResponse(mmsInitiateData)
-	mmsInitResp := mms.EncodeInitiateRequest()
+	_, _, _ = mms.ParseInitiateRequest(mmsInitiateData)
+	mmsInitResp := mms.EncodeInitiateResponse()
 	aare := mms.BuildAARE(mmsInitResp)
 	cpaPDU := isopresentation.BuildConnectAcceptPDU(aare)
 	acSPDU := isosession.BuildAcceptSPDU(cpaPDU)
@@ -362,6 +364,8 @@ func (c *serverConn) handleConfirmedRequest(data []byte) ([]byte, error) {
 		return c.handleGetNameList(invokeID, svcContent)
 	case mms.SvcIdentify: // Identify
 		return c.handleIdentify(invokeID)
+	case mms.SvcGetVarAccessAttr: // GetVariableAccessAttributes
+		return c.handleGetVarAccessAttributes(invokeID, svcContent)
 	default:
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrOther), nil
 	}
@@ -416,12 +420,322 @@ func (c *serverConn) handleWrite(invokeID uint32, content []byte) ([]byte, error
 }
 
 // handleGetNameList serves a GetNameList request.
-func (c *serverConn) handleGetNameList(invokeID uint32, _ []byte) ([]byte, error) {
-	var names []string
-	for _, ld := range c.server.model.LogicalDevices() {
-		names = append(names, ld.Name())
+func (c *serverConn) handleGetNameList(invokeID uint32, content []byte) ([]byte, error) {
+	req, err := mms.ParseGetNameListRequestContent(content)
+	if err != nil {
+		return mms.BuildServiceErrorResponse(invokeID, mms.ErrInvalidArguments), nil
 	}
+
+	var names []string
+	switch req.ObjectClass {
+	case mms.ObjectClassType(mms.ObjectClassDomain): // list logical devices (MMS domains)
+		for _, ld := range c.server.model.LogicalDevices() {
+			names = append(names, ld.Name())
+		}
+	case mms.ObjectClassType(mms.ObjectClassNamedVariable): // list named variables within a domain
+		names = c.namedVariablesForDomain(req.DomainID)
+	case mms.ObjectClassType(mms.ObjectClassNamedVariableList): // list data sets within a domain
+		names = c.namedVariableListsForDomain(req.DomainID)
+	default:
+		// Return empty list for unsupported object classes
+	}
+
+	// Apply continueAfter pagination
+	if req.ContinueAfter != "" {
+		found := false
+		for i, n := range names {
+			if n == req.ContinueAfter {
+				names = names[i+1:]
+				found = true
+				break
+			}
+		}
+		if !found {
+			names = nil
+		}
+	}
+
 	return mms.BuildGetNameListResponse(invokeID, names, false), nil
+}
+
+// namedVariablesForDomain returns MMS named variable names (logical node names) for a logical device.
+// Returns alphabetically sorted LN names, matching the C library's default behaviour.
+func (c *serverConn) namedVariablesForDomain(domainID string) []string {
+	ld := c.findLD(domainID)
+	if ld == nil {
+		return nil
+	}
+	var names []string
+	for _, ln := range ld.LogicalNodes() {
+		names = append(names, ln.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// findLD finds a logical device by name.
+func (c *serverConn) findLD(name string) *model.LogicalDevice {
+	for _, d := range c.server.model.LogicalDevices() {
+		if d.Name() == name {
+			return d
+		}
+	}
+	return nil
+}
+
+// handleGetVarAccessAttributes serves a GetVariableAccessAttributes request.
+func (c *serverConn) handleGetVarAccessAttributes(invokeID uint32, content []byte) ([]byte, error) {
+	// Parse the variableSpecification: [0] CONSTRUCTED { [1] domainSpecific { visStr domId, visStr itemId } }
+	spec, err := mms.ParseGetVarAccessAttributesRequest(content)
+	if err != nil || spec.DomainID == "" {
+		return mms.BuildServiceErrorResponse(invokeID, mms.ErrOther), nil
+	}
+
+	ld := c.findLD(spec.DomainID)
+	if ld == nil {
+		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
+	}
+
+	// Look up the named item: just LN name, or LN$FC$DO
+	typeSpec := buildTypeSpecForItem(ld, spec.ItemID)
+	if typeSpec == nil {
+		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
+	}
+
+	return mms.BuildGetVarAccessAttributesResponse(invokeID, typeSpec), nil
+}
+
+// buildTypeSpecForItem builds the MMS TypeSpecification for a variable in a logical device.
+// itemID can be just "LN" (full logical node) or "LN$FC$DO" (specific data object).
+func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string) []byte {
+	// Check for $ separator to find the depth
+	dollar := strings.IndexByte(itemID, '$')
+
+	if dollar < 0 {
+		// Plain LN name — return the full type spec for the logical node
+		for _, ln := range ld.LogicalNodes() {
+			if ln.Name() == itemID {
+				return buildTypeSpecLN(ln)
+			}
+		}
+		return nil
+	}
+
+	// LN$FC$DO — return type spec for the specific FC-grouped data object
+	parts := strings.SplitN(itemID, "$", 3)
+	if len(parts) < 3 {
+		return nil
+	}
+	lnName, fcStr, doName := parts[0], parts[1], parts[2]
+
+	for _, ln := range ld.LogicalNodes() {
+		if ln.Name() != lnName {
+			continue
+		}
+		for _, do := range ln.DataObjects() {
+			if do.Name() != doName {
+				continue
+			}
+			return buildTypeSpecDO(do, fcStr)
+		}
+	}
+	return nil
+}
+
+// buildTypeSpecLN builds a TypeSpecification STRUCTURE for a whole logical node.
+// Structure: LN → { FC → { DO → { DA... } } }
+func buildTypeSpecLN(ln *model.LogicalNode) []byte {
+	// Collect data objects grouped by FC
+	fcMap := make(map[string][]string) // FC → list of DO names
+	fcOrder := []string{}
+	doFCDAs := make(map[string]map[string][]*model.DataAttribute) // do → fc → []DA
+
+	for _, do := range ln.DataObjects() {
+		if _, exists := doFCDAs[do.Name()]; !exists {
+			doFCDAs[do.Name()] = make(map[string][]*model.DataAttribute)
+		}
+		for _, child := range do.Children() {
+			da, ok := child.(*model.DataAttribute)
+			if !ok {
+				continue
+			}
+			fc := da.FC.String()
+			if fc == "" || fc == "NONE" {
+				continue
+			}
+			doFCDAs[do.Name()][fc] = append(doFCDAs[do.Name()][fc], da)
+			// Track FC order and which DOs belong to each FC
+			found := false
+			for _, f := range fcOrder {
+				if f == fc {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fcOrder = append(fcOrder, fc)
+			}
+			added := false
+			for _, n := range fcMap[fc] {
+				if n == do.Name() {
+					added = true
+					break
+				}
+			}
+			if !added {
+				fcMap[fc] = append(fcMap[fc], do.Name())
+			}
+		}
+	}
+
+	sort.Strings(fcOrder)
+
+	var lnComponents []mms.TypeSpecComponent
+	for _, fc := range fcOrder {
+		doNames := fcMap[fc]
+		sort.Strings(doNames)
+
+		var doComponents []mms.TypeSpecComponent
+		for _, doName := range doNames {
+			das := doFCDAs[doName][fc]
+			doComponents = append(doComponents, mms.TypeSpecComponent{
+				Name:     doName,
+				TypeSpec: buildTypeSpecDAsAsStructure(das),
+			})
+		}
+		lnComponents = append(lnComponents, mms.TypeSpecComponent{
+			Name:     fc,
+			TypeSpec: mms.TypeSpecStructure(doComponents),
+		})
+	}
+	return mms.TypeSpecStructure(lnComponents)
+}
+
+// buildTypeSpecDO builds a TypeSpecification for a specific FC-filtered data object.
+func buildTypeSpecDO(do *model.DataObject, fcFilter string) []byte {
+	var das []*model.DataAttribute
+	for _, child := range do.Children() {
+		da, ok := child.(*model.DataAttribute)
+		if !ok {
+			continue
+		}
+		if fcFilter == "" || da.FC.String() == fcFilter {
+			das = append(das, da)
+		}
+	}
+	return buildTypeSpecDAsAsStructure(das)
+}
+
+// buildTypeSpecDAsAsStructure builds a STRUCTURE TypeSpec from a list of data attributes.
+func buildTypeSpecDAsAsStructure(das []*model.DataAttribute) []byte {
+	var comps []mms.TypeSpecComponent
+	for _, da := range das {
+		comps = append(comps, mms.TypeSpecComponent{
+			Name:     da.Name(),
+			TypeSpec: buildTypeSpecDA(da),
+		})
+	}
+	return mms.TypeSpecStructure(comps)
+}
+
+// buildTypeSpecDA maps a DataAttribute type to its MMS TypeSpecification bytes.
+func buildTypeSpecDA(da *model.DataAttribute) []byte {
+	switch da.AttrType {
+	case common.TypeBoolean:
+		return mms.TypeSpecBoolean()
+	case common.TypeFLOAT32:
+		return mms.TypeSpecFloat32()
+	case common.TypeFLOAT64:
+		return mms.TypeSpecFloat64()
+	case common.TypeINT8:
+		return mms.TypeSpecInteger(1)
+	case common.TypeINT16:
+		return mms.TypeSpecInteger(2)
+	case common.TypeINT32:
+		return mms.TypeSpecInteger(4)
+	case common.TypeINT64:
+		return mms.TypeSpecInteger(8)
+	case common.TypeINT8U:
+		return mms.TypeSpecUnsigned(1)
+	case common.TypeINT16U:
+		return mms.TypeSpecUnsigned(2)
+	case common.TypeINT24U:
+		return mms.TypeSpecUnsigned(3)
+	case common.TypeINT32U:
+		return mms.TypeSpecUnsigned(4)
+	case common.TypeQuality:
+		return mms.TypeSpecBitString(-13)
+	case common.TypeCheck:
+		return mms.TypeSpecBitString(-2)
+	case common.TypeGenericBitStr:
+		return mms.TypeSpecBitString(-32)
+	case common.TypeTimestamp:
+		return mms.TypeSpecUTCTime()
+	case common.TypeVisibleStr32:
+		return mms.TypeSpecVisibleString(32)
+	case common.TypeVisibleStr64:
+		return mms.TypeSpecVisibleString(64)
+	case common.TypeVisibleStr65:
+		return mms.TypeSpecVisibleString(65)
+	case common.TypeVisibleStr129:
+		return mms.TypeSpecVisibleString(129)
+	case common.TypeVisibleStr255:
+		return mms.TypeSpecVisibleString(255)
+	case common.TypeOctetString64:
+		return mms.TypeSpecOctetString(64)
+	case common.TypeOctetString6:
+		return mms.TypeSpecOctetString(6)
+	case common.TypeOctetString8:
+		return mms.TypeSpecOctetString(8)
+	default:
+		return mms.TypeSpecVisibleString(255)
+	}
+}
+
+// namedVariableListsForDomain returns data set names for a logical device domain.
+func (c *serverConn) namedVariableListsForDomain(domainID string) []string {
+	var names []string
+	for _, ds := range c.server.model.DataSets {
+		if domainID == "" {
+			names = append(names, ds.Name)
+		} else {
+			// Check if any member belongs to this domain
+			for _, m := range ds.Members {
+				parts := splitRef(m.Reference)
+				if len(parts) > 0 && parts[0] == domainID {
+					names = append(names, ds.Name)
+					break
+				}
+			}
+		}
+	}
+	return names
+}
+
+// collectFCs returns the unique functional constraint strings for all data attributes in a DO.
+func collectFCs(do *model.DataObject) []string {
+	seen := make(map[string]bool)
+	var fcs []string
+	for _, child := range do.Children() {
+		if da, ok := child.(*model.DataAttribute); ok {
+			s := da.FC.String()
+			if s != "" && s != "NONE" && !seen[s] {
+				seen[s] = true
+				fcs = append(fcs, s)
+			}
+		}
+	}
+	return fcs
+}
+
+// splitRef splits a reference string like "domainID/LN.DO" by "/".
+func splitRef(ref string) []string {
+	for i, c := range ref {
+		if c == '/' {
+			return []string{ref[:i], ref[i+1:]}
+		}
+	}
+	return []string{ref}
 }
 
 // handleIdentify serves an Identify request, returning server information.
@@ -430,26 +744,81 @@ func (c *serverConn) handleIdentify(invokeID uint32) ([]byte, error) {
 }
 
 // resolveVariable finds the value of a variable specification in the model.
+// itemID formats: "LN", "LN$FC", "LN$FC$DO", "LN$FC$DO$DA"
 func (c *serverConn) resolveVariable(spec mms.VariableSpecification) (*mms.Value, error) {
-	// domainID = logical device name, itemID = LN$FC$DO[$DA]
-	node := c.server.model.FindNode(spec.DomainID + "/" + dotifyItemID(spec.ItemID))
-	if node == nil {
-		return nil, fmt.Errorf("not found: %s/%s", spec.DomainID, spec.ItemID)
+	parts := strings.SplitN(spec.ItemID, "$", -1)
+
+	ld := c.findLD(spec.DomainID)
+	if ld == nil {
+		return nil, fmt.Errorf("domain not found: %s", spec.DomainID)
 	}
 
-	switch n := node.(type) {
-	case *model.DataAttribute:
-		if n.Value == nil {
-			return mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable), nil
+	// Find the logical node
+	var ln *model.LogicalNode
+	for _, l := range ld.LogicalNodes() {
+		if l.Name() == parts[0] {
+			ln = l
+			break
 		}
-		return n.Value, nil
-	case *model.DataObject:
-		return buildStructureFromDO(n), nil
-	case *model.LogicalNode:
-		return buildStructureFromLN(n), nil
-	default:
-		return nil, fmt.Errorf("unsupported node type")
 	}
+	if ln == nil {
+		return nil, fmt.Errorf("node not found: %s/%s", spec.DomainID, spec.ItemID)
+	}
+
+	switch len(parts) {
+	case 1:
+		// "LN" — return all data grouped by FC then DO
+		return buildStructureFromLN(ln), nil
+	case 2:
+		// "LN$FC" — return structure of DOs filtered by FC
+		return buildStructureByFC(ln, parts[1])
+	default:
+		// "LN$FC$DO[$DA...]" — strip FC (parts[1]) and look up by DO[.DA...]
+		dotPath := spec.DomainID + "/" + parts[0] + "." + strings.Join(parts[2:], ".")
+		node := c.server.model.FindNode(dotPath)
+		if node == nil {
+			return nil, fmt.Errorf("not found: %s", dotPath)
+		}
+		switch n := node.(type) {
+		case *model.DataAttribute:
+			if n.Value == nil {
+				return mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable), nil
+			}
+			return n.Value, nil
+		case *model.DataObject:
+			return buildStructureFromDO(n), nil
+		default:
+			return nil, fmt.Errorf("unsupported node type for %s", dotPath)
+		}
+	}
+}
+
+// buildStructureByFC returns a STRUCTURE value for all DataObjects with the given FC.
+func buildStructureByFC(ln *model.LogicalNode, fc string) (*mms.Value, error) {
+	var members []*mms.Value
+	found := false
+	for _, do := range ln.DataObjects() {
+		var dMembers []*mms.Value
+		for _, child := range do.Children() {
+			da, ok := child.(*model.DataAttribute)
+			if !ok || da.FC.String() != fc {
+				continue
+			}
+			if da.Value != nil {
+				dMembers = append(dMembers, da.Value)
+			} else {
+				dMembers = append(dMembers, mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable))
+			}
+			found = true
+		}
+		if len(dMembers) > 0 {
+			members = append(members, mms.NewStructure(dMembers))
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("no %s data in %s", fc, ln.Name())
+	}
+	return mms.NewStructure(members), nil
 }
 
 // writeVariable writes a value to a named variable in the model.

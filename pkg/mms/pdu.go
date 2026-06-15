@@ -249,17 +249,95 @@ func EncodeInitiateRequest() []byte {
 	var detail4 []byte
 	// [0] proposedVersionNumber: 1
 	detail4 = append(detail4, asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(1))...)
-	// [1] proposedParameterCBB: 16-bit BIT STRING
-	detail4 = append(detail4, asn1ber.EncodeContextTLV(1, false, []byte{0x03, 0xef, 0x18})...)
-	// [4] servicesSupportedCalling: 11-byte BIT STRING (tag [4] per ISO 9506-2)
+	// [1] proposedParameterCBB: 11-bit BIT STRING (5 unused bits)
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(1, false, []byte{0x05, 0xf1, 0x00})...)
+	// [2] servicesSupportedCalling: 85-bit BIT STRING (3 unused bits) — tag [2] per libiec61850 C implementation
 	servicesBits := []byte{
 		0xee, 0x1c, 0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x79, 0xef, 0x18,
 	}
-	detail4 = append(detail4, asn1ber.EncodeContextTLV(4, false, append([]byte{0x00}, servicesBits...))...)
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(2, false, append([]byte{0x03}, servicesBits...))...)
 
 	body = append(body, asn1ber.EncodeContextTLV(4, true, detail4)...)
 
 	return append([]byte{tagInitiateRequestPDU}, append(asn1ber.EncodeLength(len(body)), body...)...)
+}
+
+// ParseInitiateRequest parses an MMS Initiate Request PDU sent by the client.
+// Returns proposed localDetail and maxServOutstanding values.
+func ParseInitiateRequest(buf []byte) (int32, int16, error) {
+	if len(buf) < 2 {
+		return 0, 0, fmt.Errorf("mms: initiate request too short")
+	}
+	if buf[0] != tagInitiateRequestPDU {
+		return 0, 0, fmt.Errorf("mms: expected InitiateRequestPDU (0x%02X), got 0x%02X",
+			tagInitiateRequestPDU, buf[0])
+	}
+	length, offset, err := asn1ber.DecodeLength(buf, 1)
+	if err != nil {
+		return 0, 0, err
+	}
+	if offset+length > len(buf) {
+		return 0, 0, fmt.Errorf("mms: initiate request truncated")
+	}
+	body := buf[offset : offset+length]
+
+	var localDetail int32
+	var maxOutstanding int16
+
+	pos := 0
+	for pos < len(body) {
+		tlv, newPos, err := asn1ber.ParseTLV(body, pos)
+		if err != nil {
+			break
+		}
+		pos = newPos
+		if tlv.Class == asn1ber.ClassContext {
+			switch tlv.Tag {
+			case 0:
+				v, _ := asn1ber.DecodeInteger(tlv.Value)
+				localDetail = int32(v)
+			case 1:
+				v, _ := asn1ber.DecodeInteger(tlv.Value)
+				maxOutstanding = int16(v)
+			}
+		}
+	}
+	debugf("client->server initiate: localDetail=%d maxOutstanding=%d", localDetail, maxOutstanding)
+	return localDetail, maxOutstanding, nil
+}
+
+// EncodeInitiateResponse builds the wire-format MMS Initiate Response PDU (tag 0xA9).
+// This is sent by the server in response to a client's InitiateRequestPDU.
+func EncodeInitiateResponse() []byte {
+	var body []byte
+
+	// [0] localDetailCalled: 65000
+	body = append(body, asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(65000))...)
+
+	// [1] negotiatedMaxServOutstandingCalling: 5
+	body = append(body, asn1ber.EncodeContextTLV(1, false, asn1ber.EncodeIntegerContent(5))...)
+
+	// [2] negotiatedMaxServOutstandingCalled: 5
+	body = append(body, asn1ber.EncodeContextTLV(2, false, asn1ber.EncodeIntegerContent(5))...)
+
+	// [3] negotiatedDataStructureNestingLevel: 10
+	body = append(body, asn1ber.EncodeContextTLV(3, false, asn1ber.EncodeIntegerContent(10))...)
+
+	// [4] mmsInitResponseDetail (CONSTRUCTED)
+	var detail4 []byte
+	// [0] negotiatedVersionNumber: 1
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(0, false, asn1ber.EncodeIntegerContent(1))...)
+	// [1] negotiatedParameterCBB: 11-bit BIT STRING (5 unused bits) — matches libiec61850 C server
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(1, false, []byte{0x05, 0xf1, 0x00})...)
+	// [2] servicesSupportedCalled: 85-bit BIT STRING (3 unused bits) — tag [2] per libiec61850 C implementation
+	servicesBits := []byte{
+		0xee, 0x1c, 0x00, 0x00, 0x04, 0x08, 0x00, 0x00, 0x79, 0xef, 0x18,
+	}
+	detail4 = append(detail4, asn1ber.EncodeContextTLV(2, false, append([]byte{0x03}, servicesBits...))...)
+
+	body = append(body, asn1ber.EncodeContextTLV(4, true, detail4)...)
+
+	return append([]byte{tagInitiateResponsePDU}, append(asn1ber.EncodeLength(len(body)), body...)...)
 }
 
 // ParseInitiateResponse parses an MMS Initiate Response PDU and returns
@@ -303,6 +381,7 @@ func ParseInitiateResponse(buf []byte) (int32, int16, error) {
 			}
 		}
 	}
+	debugf("server->client initiate: localDetail=%d maxOutstanding=%d", localDetail, maxOutstanding)
 	return localDetail, maxOutstanding, nil
 }
 

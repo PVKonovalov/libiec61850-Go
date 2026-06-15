@@ -51,13 +51,26 @@ import (
 
 func main() {
 	port := 102
-	if len(os.Args) > 1 {
+	debug := false
+	args := os.Args[1:]
+	var filtered []string
+	for _, a := range args {
+		if a == "-debug" || a == "--debug" {
+			debug = true
+		} else {
+			filtered = append(filtered, a)
+		}
+	}
+	if len(filtered) > 0 {
 		var err error
-		port, err = strconv.Atoi(os.Args[1])
+		port, err = strconv.Atoi(filtered[0])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "invalid port: %v\n", err)
 			os.Exit(1)
 		}
+	}
+	if debug {
+		mms.SetDebug(true)
 	}
 
 	// ---- Build the data model ----

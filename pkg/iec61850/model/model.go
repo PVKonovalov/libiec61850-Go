@@ -42,7 +42,7 @@ import (
 	"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
-// NodeType identifies the type of a model node.
+// NodeType identifies the type of model node.
 type NodeType int
 
 const (
