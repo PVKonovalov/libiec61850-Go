@@ -148,12 +148,13 @@ func main() {
 		}
 
 		// Build a tree from the flat $-separated name list and print it.
-		root := newNode(device)
+		//root := newNode(device)
 		for _, name := range names {
-			root.insert(name)
+			fmt.Printf(" %s\n", name)
+			//root.insert(name)
 		}
-		for _, child := range root.children {
-			child.print(1)
-		}
+		//for _, child := range root.children {
+		//	child.print(1)
+		//}
 	}
 }

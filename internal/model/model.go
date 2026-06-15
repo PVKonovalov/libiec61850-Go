@@ -63,9 +63,7 @@ func BuildModel() *imodel.IedModel {
 	ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/LLN0.Mod.q", FC: common.FC_ST})
 	ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/MMXU1.Mod.q", FC: common.FC_ST})
 	ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/MMXU1.Mod.ctlModel", FC: common.FC_CF})
-	_ = ld1
-	_ = ln2
-	// iedModel.DataSets = append(iedModel.DataSets, ds21)
+	iedModel.DataSets = append(iedModel.DataSets, ds21)
 
 	// Logical Node: LPHD1
 	ln22 := imodel.NewLogicalNode("LPHD1", ld1)
@@ -224,11 +222,11 @@ func BuildModel() *imodel.IedModel {
 	da86 := imodel.NewDataAttribute("t", common.FC_ST, common.TypeTimestamp, do83)
 	da86.Value = mms.NewUTCTime(mms.UTCTime{})
 
-	do87 := imodel.NewDataObject("SchdId", ln66)
+	imodel.NewDataObject("SchdId", ln66)
 
-	do88 := imodel.NewDataObject("SchdCat", ln66)
+	imodel.NewDataObject("SchdCat", ln66)
 
-	do89 := imodel.NewDataObject("SchdTyp", ln66)
+	imodel.NewDataObject("SchdTyp", ln66)
 
 	do90 := imodel.NewDataObject("SchdAbsTm", ln66)
 	da91 := imodel.NewDataAttribute("val", common.FC_SP, common.TypeFLOAT32, do90)

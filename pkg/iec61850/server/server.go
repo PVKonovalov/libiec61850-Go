@@ -458,8 +458,9 @@ func (c *serverConn) handleGetNameList(invokeID uint32, content []byte) ([]byte,
 	return mms.BuildGetNameListResponse(invokeID, names, false), nil
 }
 
-// namedVariablesForDomain returns MMS named variable names (logical node names) for a logical device.
-// Returns alphabetically sorted LN names, matching the C library's default behaviour.
+// namedVariablesForDomain returns the full MMS named-variable list for a logical device.
+// Each entry is "LN$FC$DO[$DA...]" for every leaf data attribute, matching the C library behaviour.
+// The list is sorted alphabetically so clients can use binary search / continueAfter pagination.
 func (c *serverConn) namedVariablesForDomain(domainID string) []string {
 	ld := c.findLD(domainID)
 	if ld == nil {
@@ -467,10 +468,38 @@ func (c *serverConn) namedVariablesForDomain(domainID string) []string {
 	}
 	var names []string
 	for _, ln := range ld.LogicalNodes() {
-		names = append(names, ln.Name())
+		for _, do := range ln.DataObjects() {
+			collectNamedVariables(ln.Name(), do, &names)
+		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+// collectNamedVariables appends "LN$FC$DO[$DA...]" entries for every leaf DA under do.
+func collectNamedVariables(lnName string, do *model.DataObject, out *[]string) {
+	for _, child := range do.Children() {
+		switch n := child.(type) {
+		case *model.DataAttribute:
+			collectDAVariables(lnName+"$"+n.FC.String()+"$"+do.Name(), n, out)
+		case *model.DataObject:
+			collectNamedVariables(lnName, n, out)
+		}
+	}
+}
+
+// collectDAVariables appends one entry per leaf DA (recursing into sub-DAs).
+func collectDAVariables(prefix string, da *model.DataAttribute, out *[]string) {
+	subs := da.Children()
+	if len(subs) == 0 {
+		*out = append(*out, prefix+"$"+da.Name())
+		return
+	}
+	for _, child := range subs {
+		if sub, ok := child.(*model.DataAttribute); ok {
+			collectDAVariables(prefix+"$"+da.Name(), sub, out)
+		}
+	}
 }
 
 // findLD finds a logical device by name.
