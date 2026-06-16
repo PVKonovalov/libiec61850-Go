@@ -198,10 +198,25 @@ func ParseGetNameListRequestContent(content []byte) (*GetNameListRequest, error)
 }
 
 // ParseReadRequestContent parses the content of a Read confirmed service request.
-// Wire: [1] EXPLICIT variableAccessSpec { [0] listOfVariable { 0x30 items... } }
+//
+// Wire layout (ISO 9506-2):
+//
+//	[0] IMPLICIT BOOLEAN OPTIONAL  -- specificationWithResult (ignored per IEC 61850)
+//	[1] IMPLICIT variableAccessSpecification
 func ParseReadRequestContent(content []byte) ([]VariableSpecification, error) {
+	pos := 0
+
+	// Skip optional [0] IMPLICIT BOOLEAN specificationWithResult (tag 0x80).
+	// IEC 61850 servers ignore this flag; the C library does the same.
+	if len(content) > 0 && content[0] == 0x80 {
+		tlv, next, err := asn1ber.ParseTLV(content, 0)
+		if err == nil && tlv.Class == asn1ber.ClassContext && tlv.Tag == 0 {
+			pos = next
+		}
+	}
+
 	// Strip [1] EXPLICIT variableAccessSpec
-	varAccessTLV, _, err := asn1ber.ParseTLV(content, 0)
+	varAccessTLV, _, err := asn1ber.ParseTLV(content, pos)
 	if err != nil {
 		return nil, fmt.Errorf("mms: ReadRequest: parse variableAccessSpec: %w", err)
 	}
@@ -211,9 +226,9 @@ func ParseReadRequestContent(content []byte) ([]VariableSpecification, error) {
 	}
 
 	// Strip [0] listOfVariable
-	listTLV, _, err := asn1ber.ParseTLV(varAccessTLV.Value, 0)
-	if err != nil {
-		return nil, fmt.Errorf("mms: ReadRequest: parse listOfVariable: %w", err)
+	listTLV, _, err2 := asn1ber.ParseTLV(varAccessTLV.Value, 0)
+	if err2 != nil {
+		return nil, fmt.Errorf("mms: ReadRequest: parse listOfVariable: %w", err2)
 	}
 	if listTLV.Class != asn1ber.ClassContext || listTLV.Tag != 0 {
 		return nil, fmt.Errorf("mms: ReadRequest: expected [0] listOfVariable, got class=%d tag=%d",
@@ -222,7 +237,7 @@ func ParseReadRequestContent(content []byte) ([]VariableSpecification, error) {
 
 	// Iterate 0x30 SEQUENCE items (ListOfVariableSeq entries)
 	var specs []VariableSpecification
-	pos := 0
+	pos = 0
 	for pos < len(listTLV.Value) {
 		seqTLV, newPos, err := asn1ber.ParseTLV(listTLV.Value, pos)
 		if err != nil {
@@ -516,6 +531,16 @@ func TypeSpecOctetString(maxBytes int) []byte {
 // TypeSpecUTCTime encodes an MMS UTC-time TypeSpecification.
 func TypeSpecUTCTime() []byte { return asn1ber.EncodeContextTLV(17, false, nil) }
 
+// TypeSpecBinaryTime encodes an MMS binary-time TypeSpecification.
+// size must be 4 or 6 (bytes). Per ASN.1: binarytime BOOLEAN (true=6-byte, false=4-byte).
+func TypeSpecBinaryTime(size int) []byte {
+	v := byte(0x00)
+	if size == 6 {
+		v = 0x01
+	}
+	return asn1ber.EncodeContextTLV(12, false, []byte{v})
+}
+
 // BuildReadResponse builds a ConfirmedResponsePDU for a Read service.
 func BuildReadResponse(invokeID uint32, results []*ReadResult) []byte {
 	var listBody []byte
@@ -588,6 +613,75 @@ func BuildIdentifyResponse(invokeID uint32, vendorName, modelName, revision stri
 
 	svcBody := appendTagLength(byte(svcIdentify|asn1ber.ClassContext|asn1ber.Constructed), body)
 	return buildConfirmedResponse(invokeID, svcBody)
+}
+
+// ParseGetNamedVarListAttrRequest parses the content of a GetNamedVariableListAttributes request.
+// Returns the domain ID and item name (e.g. "Device1", "LLN0$dataset1").
+func ParseGetNamedVarListAttrRequest(content []byte) (domainID, itemID string, err error) {
+	tlv, _, e := asn1ber.ParseTLV(content, 0)
+	if e != nil {
+		return "", "", e
+	}
+	// Expect [1] CONSTRUCTED domainSpecific
+	if tlv.Class != asn1ber.ClassContext || tlv.Tag != 1 {
+		return "", "", fmt.Errorf("mms: GVLAA: expected [1] domainSpecific, got class=%d tag=%d", tlv.Class, tlv.Tag)
+	}
+	pos := 0
+	for pos < len(tlv.Value) {
+		inner, newPos, e := asn1ber.ParseTLV(tlv.Value, pos)
+		if e != nil {
+			break
+		}
+		pos = newPos
+		if inner.Class == asn1ber.ClassUniversal && inner.Tag == asn1ber.TagVisibleString {
+			if domainID == "" {
+				domainID = string(inner.Value)
+			} else {
+				itemID = string(inner.Value)
+			}
+		}
+	}
+	return domainID, itemID, nil
+}
+
+// BuildGetNamedVarListAttrResponse builds a GetNamedVariableListAttributes response.
+// deletable indicates if the list may be deleted by clients.
+// members is the list of variable specifications that make up the named variable list.
+func BuildGetNamedVarListAttrResponse(invokeID uint32, deletable bool, members []VariableSpecification) []byte {
+	var svcBody []byte
+
+	// mmsDeletable: [0] IMPLICIT BOOLEAN (tag 0x80, per GetNamedVariableListAttributesResponse.c:123-131)
+	delByte := byte(0x00)
+	if deletable {
+		delByte = 0xff
+	}
+	svcBody = append(svcBody, asn1ber.EncodeContextTLV(0, false, []byte{delByte})...)
+
+	// listOfVariable: [1] IMPLICIT SEQUENCE OF (tag 0xA1, per GetNamedVariableListAttributesResponse.c:88-89)
+	// Each member is a SEQUENCE { variableSpecification VariableSpecification }
+	var listBody []byte
+	for _, m := range members {
+		// domainSpecific: [1] CONSTRUCTED { 0x1a domainId, 0x1a itemId }
+		var ds []byte
+		ds = append(ds, 0x1a)
+		ds = append(ds, asn1ber.EncodeLength(len(m.DomainID))...)
+		ds = append(ds, []byte(m.DomainID)...)
+		ds = append(ds, 0x1a)
+		ds = append(ds, asn1ber.EncodeLength(len(m.ItemID))...)
+		ds = append(ds, []byte(m.ItemID)...)
+		// ObjectName.domainSpecific: [1] CONSTRUCTED
+		objName := asn1ber.EncodeContextTLV(1, true, ds)
+		// variableSpecification.name: [0] CONSTRUCTED
+		varSpec := asn1ber.EncodeContextTLV(0, true, objName)
+		// member SEQUENCE (universal 0x30)
+		member := asn1ber.EncodeTLV(asn1ber.ClassUniversal, true, asn1ber.TagSequence, varSpec)
+		listBody = append(listBody, member...)
+	}
+	svcBody = append(svcBody, asn1ber.EncodeContextTLV(1, true, listBody)...)
+
+	// [12] CONSTRUCTED service tag
+	svcTag := appendTagLength(byte(svcGetNamedVariableListAttributes|asn1ber.ClassContext|asn1ber.Constructed), svcBody)
+	return buildConfirmedResponse(invokeID, svcTag)
 }
 
 // buildConfirmedResponse wraps service PDU in a ConfirmedResponsePDU.

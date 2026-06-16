@@ -93,6 +93,175 @@ type WriteAccessHandler func(da *model.DataAttribute, value *mms.Value, clientAd
 // Return nil to allow the read, or an error to reject it.
 type ReadAccessHandler func(da *model.DataAttribute, clientAddr net.Addr) error
 
+// brcbState holds the runtime MMS values for one buffered RCB instance.
+// Field order matches createBufferedReportControlBlock() in reporting.c.
+type brcbState struct {
+	rptID       *mms.Value // [0] MMS_VISIBLE_STRING -129
+	rptEna      *mms.Value // [1] MMS_BOOLEAN
+	datSet      *mms.Value // [2] MMS_VISIBLE_STRING -129
+	confRev     *mms.Value // [3] MMS_UNSIGNED 32
+	optFlds     *mms.Value // [4] MMS_BIT_STRING -10
+	bufTm       *mms.Value // [5] MMS_UNSIGNED 32
+	sqNum       *mms.Value // [6] MMS_UNSIGNED 16
+	trgOps      *mms.Value // [7] MMS_BIT_STRING -6
+	intgPd      *mms.Value // [8] MMS_UNSIGNED 32
+	gi          *mms.Value // [9] MMS_BOOLEAN
+	purgeBuf    *mms.Value // [10] MMS_BOOLEAN
+	entryID     *mms.Value // [11] MMS_OCTET_STRING 8
+	timeofEntry *mms.Value // [12] MMS_BINARY_TIME 6
+}
+
+func (s *brcbState) fieldNames() []string {
+	return []string{"RptID", "RptEna", "DatSet", "ConfRev", "OptFlds", "BufTm", "SqNum", "TrgOps", "IntgPd", "GI", "PurgeBuf", "EntryID", "TimeofEntry"}
+}
+
+func (s *brcbState) asValues() []*mms.Value {
+	return []*mms.Value{s.rptID, s.rptEna, s.datSet, s.confRev, s.optFlds, s.bufTm, s.sqNum, s.trgOps, s.intgPd, s.gi, s.purgeBuf, s.entryID, s.timeofEntry}
+}
+
+func (s *brcbState) fieldValue(name string) *mms.Value {
+	switch name {
+	case "RptID":
+		return s.rptID
+	case "RptEna":
+		return s.rptEna
+	case "DatSet":
+		return s.datSet
+	case "ConfRev":
+		return s.confRev
+	case "OptFlds":
+		return s.optFlds
+	case "BufTm":
+		return s.bufTm
+	case "SqNum":
+		return s.sqNum
+	case "TrgOps":
+		return s.trgOps
+	case "IntgPd":
+		return s.intgPd
+	case "GI":
+		return s.gi
+	case "PurgeBuf":
+		return s.purgeBuf
+	case "EntryID":
+		return s.entryID
+	case "TimeofEntry":
+		return s.timeofEntry
+	}
+	return nil
+}
+
+func (s *brcbState) setFieldValue(name string, v *mms.Value) bool {
+	switch name {
+	case "RptID":
+		s.rptID = v
+	case "RptEna":
+		s.rptEna = v
+	case "DatSet":
+		s.datSet = v
+	case "ConfRev":
+		s.confRev = v
+	case "OptFlds":
+		s.optFlds = v
+	case "BufTm":
+		s.bufTm = v
+	case "SqNum":
+		s.sqNum = v
+	case "TrgOps":
+		s.trgOps = v
+	case "IntgPd":
+		s.intgPd = v
+	case "GI":
+		s.gi = v
+	case "PurgeBuf":
+		s.purgeBuf = v
+	case "EntryID":
+		s.entryID = v
+	case "TimeofEntry":
+		s.timeofEntry = v
+	default:
+		return false
+	}
+	return true
+}
+
+// encodeTrgOpsBits converts a TriggerOption bitmask to MMS BIT_STRING(-6) bytes.
+// Mirrors MmsValue_setBitStringBit calls in createTrgOps() in reporting.c.
+func encodeTrgOpsBits(t common.TriggerOption) []byte {
+	var b byte
+	if t&common.TriggerDataChanged != 0 {
+		b |= 0x40 // bit 1
+	}
+	if t&common.TriggerQualityChanged != 0 {
+		b |= 0x20 // bit 2
+	}
+	if t&common.TriggerDataUpdate != 0 {
+		b |= 0x10 // bit 3
+	}
+	if t&common.TriggerIntegrity != 0 {
+		b |= 0x08 // bit 4
+	}
+	if t&common.TriggerGI != 0 {
+		b |= 0x04 // bit 5
+	}
+	return []byte{b}
+}
+
+// encodeOptFldsBits converts a ReportOption bitmask to MMS BIT_STRING(-10) bytes.
+// Mirrors MmsValue_setBitStringBit calls in createOptFlds() in reporting.c.
+func encodeOptFldsBits(o common.ReportOption) []byte {
+	var b0, b1 byte
+	if o&common.ReportOptSeqNum != 0 {
+		b0 |= 0x40 // bit 1
+	}
+	if o&common.ReportOptTimeStamp != 0 {
+		b0 |= 0x20 // bit 2
+	}
+	if o&common.ReportOptReasonForInclusion != 0 {
+		b0 |= 0x10 // bit 3
+	}
+	if o&common.ReportOptDataSet != 0 {
+		b0 |= 0x08 // bit 4
+	}
+	if o&common.ReportOptDataReference != 0 {
+		b0 |= 0x04 // bit 5
+	}
+	if o&common.ReportOptBufferOverflow != 0 {
+		b0 |= 0x02 // bit 6
+	}
+	if o&common.ReportOptEntryID != 0 {
+		b0 |= 0x01 // bit 7
+	}
+	if o&common.ReportOptConfRev != 0 {
+		b1 |= 0x80 // bit 8
+	}
+	return []byte{b0, b1}
+}
+
+// newBRCBState initialises runtime BRCB state from static model configuration.
+// datSetMmsRef is the full MMS DatSet reference (e.g. "SampleIEDDevice1/LLN0$dataset1").
+func newBRCBState(rcb *model.ReportControlBlock, datSetMmsRef string) *brcbState {
+	rptID := rcb.RptID
+	if rptID == "" {
+		rptID = rcb.LDInst + "/" + rcb.LNName + "$BR$" + rcb.Name
+	}
+	return &brcbState{
+		rptID:       mms.NewVisibleString(rptID),
+		rptEna:      mms.NewBoolean(false),
+		datSet:      mms.NewVisibleString(datSetMmsRef),
+		confRev:     mms.NewUint32(rcb.ConfRev),
+		optFlds:     mms.NewBitString(encodeOptFldsBits(rcb.OptFields), -10),
+		bufTm:       mms.NewUint32(rcb.BufTime),
+		sqNum:       mms.NewUint32(0),
+		trgOps:      mms.NewBitString(encodeTrgOpsBits(rcb.TrgOps), -6),
+		intgPd:      mms.NewUint32(rcb.IntgPd),
+		gi:          mms.NewBoolean(false),
+		purgeBuf:    mms.NewBoolean(false),
+		entryID:     mms.NewOctetString(make([]byte, 8)),
+		timeofEntry: mms.NewBinaryTime(true),
+	}
+}
+
 // IedServer is an IEC 61850 MMS server.
 type IedServer struct {
 	mu      sync.Mutex
@@ -106,6 +275,8 @@ type IedServer struct {
 
 	writeHandler WriteAccessHandler
 	readHandler  ReadAccessHandler
+
+	brcbValues map[string]*brcbState // keyed by RCB.Name (e.g. "LLN0_Events_BuffRep01")
 }
 
 // NewIedServer creates a new IED server with the given data model and configuration.
@@ -114,11 +285,26 @@ func NewIedServer(iedModel *model.IedModel, config *Config) *IedServer {
 	if config == nil {
 		config = DefaultConfig()
 	}
-	return &IedServer{
-		model:  iedModel,
-		config: config,
-		conns:  make(map[uint64]*serverConn),
+	s := &IedServer{
+		model:      iedModel,
+		config:     config,
+		conns:      make(map[uint64]*serverConn),
+		brcbValues: make(map[string]*brcbState),
 	}
+	// Initialise runtime state for each buffered RCB.
+	// DatSet MMS reference = IEDName+LDInst+"/"+LNName+"$"+DataSetRef
+	for _, rcb := range iedModel.RCBs {
+		if !rcb.Buffered {
+			continue
+		}
+		mmsDomain := iedModel.Name() + rcb.LDInst
+		datSetRef := ""
+		if rcb.DataSetRef != "" {
+			datSetRef = mmsDomain + "/" + rcb.LNName + "$" + rcb.DataSetRef
+		}
+		s.brcbValues[rcb.Name] = newBRCBState(rcb, datSetRef)
+	}
+	return s
 }
 
 // SetWriteAccessHandler installs a handler for write access control.
@@ -366,6 +552,8 @@ func (c *serverConn) handleConfirmedRequest(data []byte) ([]byte, error) {
 		return c.handleIdentify(invokeID)
 	case mms.SvcGetVarAccessAttr: // GetVariableAccessAttributes
 		return c.handleGetVarAccessAttributes(invokeID, svcContent)
+	case mms.SvcGetNamedVarListAttr: // GetNamedVariableListAttributes
+		return c.handleGetNamedVarListAttr(invokeID, svcContent)
 	default:
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrOther), nil
 	}
@@ -430,7 +618,7 @@ func (c *serverConn) handleGetNameList(invokeID uint32, content []byte) ([]byte,
 	switch req.ObjectClass {
 	case mms.ObjectClassType(mms.ObjectClassDomain): // list logical devices (MMS domains)
 		for _, ld := range c.server.model.LogicalDevices() {
-			names = append(names, ld.Name())
+			names = append(names, c.mmsDomainName(ld))
 		}
 	case mms.ObjectClassType(mms.ObjectClassNamedVariable): // list named variables within a domain
 		names = c.namedVariablesForDomain(req.DomainID)
@@ -455,7 +643,22 @@ func (c *serverConn) handleGetNameList(invokeID uint32, content []byte) ([]byte,
 		}
 	}
 
-	return mms.BuildGetNameListResponse(invokeID, names, false), nil
+	// Limit response size to avoid exceeding the negotiated MMS PDU size.
+	// Each name is encoded as a length-prefixed string; budget ~60 KB conservatively.
+	// moreFollows=true signals the client to issue another request with continueAfter.
+	const maxResponseBytes = 60000
+	moreFollows := false
+	budget := maxResponseBytes
+	for i, n := range names {
+		budget -= 2 + len(n) // 1 byte tag + 1 byte length (short form) + content
+		if budget < 0 {
+			names = names[:i]
+			moreFollows = true
+			break
+		}
+	}
+
+	return mms.BuildGetNameListResponse(invokeID, names, moreFollows), nil
 }
 
 // namedVariablesForDomain returns the full MMS named-variable list for a logical device,
@@ -526,6 +729,17 @@ func (c *serverConn) namedVariablesForDomain(domainID string) []string {
 				}
 			}
 		}
+
+		// Add LN$BR as a single top-level named variable if this LN has buffered RCBs.
+		// Mirrors C library behaviour: "BR" is one MMS named variable (a STRUCTURE),
+		// not a collection of per-field named variables. Sub-elements are accessed via
+		// MMS component access (LN$BR$rcbName, LN$BR$rcbName$field), not listed here.
+		for _, rcb := range c.server.model.RCBs {
+			if rcb.Buffered && rcb.LDInst == ld.Name() && rcb.LNName == lnName {
+				names = append(names, lnName+"$BR")
+				break
+			}
+		}
 	}
 
 	sort.Strings(names)
@@ -543,10 +757,19 @@ func collectDANames(prefix string, da *model.DataAttribute, out *[]string) {
 	}
 }
 
-// findLD finds a logical device by name.
-func (c *serverConn) findLD(name string) *model.LogicalDevice {
+// mmsDomainName returns the MMS domain name for a logical device.
+// Per IEC 61850 / C library mms_mapping.c: use LDName if set, otherwise IEDName+LDInst.
+func (c *serverConn) mmsDomainName(ld *model.LogicalDevice) string {
+	if ld.LDName != "" {
+		return ld.LDName
+	}
+	return c.server.model.Name() + ld.Name()
+}
+
+// findLD finds a logical device by its MMS domain name.
+func (c *serverConn) findLD(mmsDomain string) *model.LogicalDevice {
 	for _, d := range c.server.model.LogicalDevices() {
-		if d.Name() == name {
+		if c.mmsDomainName(d) == mmsDomain {
 			return d
 		}
 	}
@@ -566,8 +789,8 @@ func (c *serverConn) handleGetVarAccessAttributes(invokeID uint32, content []byt
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
 	}
 
-	// Look up the named item: just LN name, or LN$FC$DO
-	typeSpec := buildTypeSpecForItem(ld, spec.ItemID)
+	// Look up the named item: just LN name, or LN$FC$DO, or LN$BR[...]
+	typeSpec := buildTypeSpecForItem(ld, spec.ItemID, c.server.model.RCBs)
 	if typeSpec == nil {
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
 	}
@@ -576,8 +799,8 @@ func (c *serverConn) handleGetVarAccessAttributes(invokeID uint32, content []byt
 }
 
 // buildTypeSpecForItem builds the MMS TypeSpecification for a variable in a logical device.
-// itemID can be just "LN" (full logical node) or "LN$FC$DO" (specific data object).
-func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string) []byte {
+// itemID can be just "LN", "LN$BR", "LN$BR$rcbName", or "LN$FC$DO".
+func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string, rcbs []*model.ReportControlBlock) []byte {
 	// Check for $ separator to find the depth
 	dollar := strings.IndexByte(itemID, '$')
 
@@ -585,18 +808,35 @@ func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string) []byte {
 		// Plain LN name — return the full type spec for the logical node
 		for _, ln := range ld.LogicalNodes() {
 			if ln.Name() == itemID {
-				return buildTypeSpecLN(ln)
+				return buildTypeSpecLN(ln, rcbs, ld.Name())
 			}
 		}
 		return nil
 	}
 
-	// LN$FC$DO — return type spec for the specific FC-grouped data object
-	parts := strings.SplitN(itemID, "$", 3)
+	parts := strings.SplitN(itemID, "$", -1)
+	lnName := parts[0]
+
+	// Handle BR (buffered report control block) items.
+	if len(parts) >= 2 && parts[1] == "BR" {
+		switch len(parts) {
+		case 2:
+			// LN$BR — structure containing all BRCB instances for this LN
+			return buildTypeSpecBRGroup(lnName, ld, rcbs, "")
+		case 3:
+			// LN$BR$rcbName — type spec for one BRCB instance
+			return buildTypeSpecBRCB()
+		default:
+			// LN$BR$rcbName$fieldName — type spec for one field (not needed by most clients)
+			return nil
+		}
+	}
+
+	// LN$FC$DO[$DA...] — return type spec for the specific FC-grouped data object
 	if len(parts) < 3 {
 		return nil
 	}
-	lnName, fcStr, doName := parts[0], parts[1], parts[2]
+	fcStr, doName := parts[1], parts[2]
 
 	for _, ln := range ld.LogicalNodes() {
 		if ln.Name() != lnName {
@@ -612,9 +852,52 @@ func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string) []byte {
 	return nil
 }
 
+// buildTypeSpecBRGroup returns the TypeSpec for LN$BR — a structure of all BRCB instances.
+// ld may be nil; in that case ldInst is used directly for filtering.
+func buildTypeSpecBRGroup(lnName string, ld *model.LogicalDevice, rcbs []*model.ReportControlBlock, ldInst string) []byte {
+	if ld != nil {
+		ldInst = ld.Name()
+	}
+	var comps []mms.TypeSpecComponent
+	for _, rcb := range rcbs {
+		if rcb.Buffered && rcb.LDInst == ldInst && rcb.LNName == lnName {
+			comps = append(comps, mms.TypeSpecComponent{
+				Name:     rcb.Name,
+				TypeSpec: buildTypeSpecBRCB(),
+			})
+		}
+	}
+	if len(comps) == 0 {
+		return nil
+	}
+	return mms.TypeSpecStructure(comps)
+}
+
+// buildTypeSpecBRCB returns the TypeSpec for one BRCB instance.
+// Fields match createBufferedReportControlBlock() in reporting.c (13 elements, Ed1).
+func buildTypeSpecBRCB() []byte {
+	comps := []mms.TypeSpecComponent{
+		{Name: "RptID", TypeSpec: mms.TypeSpecVisibleString(129)},
+		{Name: "RptEna", TypeSpec: mms.TypeSpecBoolean()},
+		{Name: "DatSet", TypeSpec: mms.TypeSpecVisibleString(129)},
+		{Name: "ConfRev", TypeSpec: mms.TypeSpecUnsigned(4)},
+		{Name: "OptFlds", TypeSpec: mms.TypeSpecBitString(-10)},
+		{Name: "BufTm", TypeSpec: mms.TypeSpecUnsigned(4)},
+		{Name: "SqNum", TypeSpec: mms.TypeSpecUnsigned(2)},
+		{Name: "TrgOps", TypeSpec: mms.TypeSpecBitString(-6)},
+		{Name: "IntgPd", TypeSpec: mms.TypeSpecUnsigned(4)},
+		{Name: "GI", TypeSpec: mms.TypeSpecBoolean()},
+		{Name: "PurgeBuf", TypeSpec: mms.TypeSpecBoolean()},
+		{Name: "EntryID", TypeSpec: mms.TypeSpecOctetString(8)},
+		{Name: "TimeofEntry", TypeSpec: mms.TypeSpecBinaryTime(6)},
+	}
+	return mms.TypeSpecStructure(comps)
+}
+
 // buildTypeSpecLN builds a TypeSpecification STRUCTURE for a whole logical node.
-// Structure: LN → { FC → { DO → { DA... } } }
-func buildTypeSpecLN(ln *model.LogicalNode) []byte {
+// Structure: LN → { FC → { DO → { DA... } }, BR → { rcbName → { field... } } }
+// rcbs is the full RCB list; used to inject the BR group when the LN has buffered RCBs.
+func buildTypeSpecLN(ln *model.LogicalNode, rcbs []*model.ReportControlBlock, ldInst string) []byte {
 	// Collect data objects grouped by FC
 	fcMap := make(map[string][]string) // FC → list of DO names
 	fcOrder := []string{}
@@ -660,8 +943,20 @@ func buildTypeSpecLN(ln *model.LogicalNode) []byte {
 
 	sort.Strings(fcOrder)
 
+	// Collect BRCB type spec for this LN (if any).
+	brTypeSpec := buildTypeSpecBRGroup(ln.Name(), nil, rcbs, ldInst)
+
 	var lnComponents []mms.TypeSpecComponent
 	for _, fc := range fcOrder {
+		// Insert BR group before the first FC that sorts after "BR" alphabetically.
+		if brTypeSpec != nil && fc > "BR" {
+			lnComponents = append(lnComponents, mms.TypeSpecComponent{
+				Name:     "BR",
+				TypeSpec: brTypeSpec,
+			})
+			brTypeSpec = nil
+		}
+
 		doNames := fcMap[fc]
 		sort.Strings(doNames)
 
@@ -676,6 +971,13 @@ func buildTypeSpecLN(ln *model.LogicalNode) []byte {
 		lnComponents = append(lnComponents, mms.TypeSpecComponent{
 			Name:     fc,
 			TypeSpec: mms.TypeSpecStructure(doComponents),
+		})
+	}
+	// Append BR if it sorts after all FCs or there are no FCs.
+	if brTypeSpec != nil {
+		lnComponents = append(lnComponents, mms.TypeSpecComponent{
+			Name:     "BR",
+			TypeSpec: brTypeSpec,
 		})
 	}
 	return mms.TypeSpecStructure(lnComponents)
@@ -777,23 +1079,35 @@ func buildTypeSpecDA(da *model.DataAttribute) []byte {
 }
 
 // namedVariableListsForDomain returns data set names for a logical device domain.
+// Member references store only the LDInst; expand to full MMS domain name for comparison.
 func (c *serverConn) namedVariableListsForDomain(domainID string) []string {
 	var names []string
 	for _, ds := range c.server.model.DataSets {
 		if domainID == "" {
 			names = append(names, ds.Name)
-		} else {
-			// Check if any member belongs to this domain
-			for _, m := range ds.Members {
-				parts := splitRef(m.Reference)
-				if len(parts) > 0 && parts[0] == domainID {
-					names = append(names, ds.Name)
-					break
-				}
+			continue
+		}
+		for _, m := range ds.Members {
+			parts := splitRef(m.Reference)
+			if len(parts) > 0 && c.ldInstToMmsDomain(parts[0]) == domainID {
+				names = append(names, ds.Name)
+				break
 			}
 		}
 	}
 	return names
+}
+
+// ldInstToMmsDomain converts a bare LDInst name to its MMS domain name by
+// finding the matching logical device and prepending the IED name.
+// If no LD is found (e.g. cross-IED reference), the ldInst is returned unchanged.
+func (c *serverConn) ldInstToMmsDomain(ldInst string) string {
+	for _, ld := range c.server.model.LogicalDevices() {
+		if ld.Name() == ldInst {
+			return c.mmsDomainName(ld)
+		}
+	}
+	return ldInst
 }
 
 // collectFCs returns the unique functional constraint strings for all data attributes in a DO.
@@ -849,10 +1163,15 @@ func (c *serverConn) resolveVariable(spec mms.VariableSpecification) (*mms.Value
 		return nil, fmt.Errorf("node not found: %s/%s", spec.DomainID, spec.ItemID)
 	}
 
+	// Handle BR (buffered RCB) items: LN$BR, LN$BR$rcbName, LN$BR$rcbName$fieldName
+	if len(parts) >= 2 && parts[1] == "BR" {
+		return c.resolveBRCBVariable(parts, ld.Name())
+	}
+
 	switch len(parts) {
 	case 1:
-		// "LN" — return all data grouped by FC then DO
-		return buildStructureFromLN(ln), nil
+		// "LN" — return all data grouped by FC then DO, with BR group if present
+		return c.buildStructureFromLNWithBR(ln, ld.Name()), nil
 	case 2:
 		// "LN$FC" — return structure of DOs filtered by FC
 		return buildStructureByFC(ln, parts[1])
@@ -877,11 +1196,64 @@ func (c *serverConn) resolveVariable(spec mms.VariableSpecification) (*mms.Value
 	}
 }
 
+// resolveBRCBVariable resolves a BRCB variable.
+// parts[0]=LNName, parts[1]="BR", parts[2]=rcbName (opt), parts[3]=fieldName (opt).
+// ldInst is the logical device instance name for filtering.
+func (c *serverConn) resolveBRCBVariable(parts []string, ldInst string) (*mms.Value, error) {
+	lnName := parts[0]
+	switch len(parts) {
+	case 2:
+		// LN$BR — return structure of all BRCB instances for this LN
+		var members []*mms.Value
+		for _, rcb := range c.server.model.RCBs {
+			if rcb.Buffered && rcb.LDInst == ldInst && rcb.LNName == lnName {
+				state := c.server.brcbValues[rcb.Name]
+				if state == nil {
+					continue
+				}
+				members = append(members, mms.NewStructure(state.asValues()))
+			}
+		}
+		if len(members) == 0 {
+			return nil, fmt.Errorf("no BRCB for LN %s", lnName)
+		}
+		return mms.NewStructure(members), nil
+	case 3:
+		// LN$BR$rcbName — return one BRCB instance as a structure
+		rcbName := parts[2]
+		state := c.server.brcbValues[rcbName]
+		if state == nil {
+			return nil, fmt.Errorf("BRCB not found: %s", rcbName)
+		}
+		return mms.NewStructure(state.asValues()), nil
+	case 4:
+		// LN$BR$rcbName$fieldName
+		rcbName, fieldName := parts[2], parts[3]
+		state := c.server.brcbValues[rcbName]
+		if state == nil {
+			return nil, fmt.Errorf("BRCB not found: %s", rcbName)
+		}
+		v := state.fieldValue(fieldName)
+		if v == nil {
+			return nil, fmt.Errorf("BRCB field not found: %s", fieldName)
+		}
+		return v, nil
+	}
+	return nil, fmt.Errorf("invalid BRCB path")
+}
+
 // buildStructureByFC returns a STRUCTURE value for all DataObjects with the given FC.
+// DOs are sorted alphabetically to match the order used in buildTypeSpecLN, so the
+// returned value structure aligns with the type spec that clients received via GVAA.
 func buildStructureByFC(ln *model.LogicalNode, fc string) (*mms.Value, error) {
+	dos := ln.DataObjects()
+	sorted := make([]*model.DataObject, len(dos))
+	copy(sorted, dos)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name() < sorted[j].Name() })
+
 	var members []*mms.Value
 	found := false
-	for _, do := range ln.DataObjects() {
+	for _, do := range sorted {
 		var dMembers []*mms.Value
 		for _, child := range do.Children() {
 			da, ok := child.(*model.DataAttribute)
@@ -901,8 +1273,71 @@ func buildStructureByFC(ln *model.LogicalNode, fc string) (*mms.Value, error) {
 	return mms.NewStructure(members), nil
 }
 
+// handleGetNamedVarListAttr serves a GetNamedVariableListAttributes request.
+// It returns the list of variable specifications (members) for a named variable list (dataset).
+func (c *serverConn) handleGetNamedVarListAttr(invokeID uint32, content []byte) ([]byte, error) {
+	domainID, itemID, err := mms.ParseGetNamedVarListAttrRequest(content)
+	if err != nil || domainID == "" || itemID == "" {
+		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
+	}
+
+	// Find the dataset
+	var ds *model.DataSet
+	for _, d := range c.server.model.DataSets {
+		if d.Name == itemID {
+			ds = d
+			break
+		}
+	}
+	if ds == nil {
+		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
+	}
+
+	// Build member variable specs.
+	// Reference format: "Device1/LLN0.Mod.q" + FC_ST → domain="SampleIEDDevice1", itemId="LLN0$ST$Mod$q".
+	// The reference stores the bare LDInst; expand it to the full MMS domain name.
+	var members []mms.VariableSpecification
+	for _, m := range ds.Members {
+		slash := strings.IndexByte(m.Reference, '/')
+		if slash < 0 {
+			continue
+		}
+		ldInst := m.Reference[:slash]
+		rest := m.Reference[slash+1:] // "LLN0.Mod.q"
+		parts := strings.Split(rest, ".")
+		// insert FC after LN name
+		mItemID := parts[0] + "$" + m.FC.String()
+		if len(parts) > 1 {
+			mItemID += "$" + strings.Join(parts[1:], "$")
+		}
+		members = append(members, mms.VariableSpecification{
+			DomainID: c.ldInstToMmsDomain(ldInst),
+			ItemID:   mItemID,
+		})
+	}
+
+	return mms.BuildGetNamedVarListAttrResponse(invokeID, false, members), nil
+}
+
 // writeVariable writes a value to a named variable in the model.
 func (c *serverConn) writeVariable(spec mms.VariableSpecification, value *mms.Value) error {
+	parts := strings.SplitN(spec.ItemID, "$", -1)
+
+	// Handle BRCB writes: LN$BR$rcbName$fieldName
+	if len(parts) == 4 && parts[1] == "BR" {
+		rcbName, fieldName := parts[2], parts[3]
+		c.server.mu.Lock()
+		state := c.server.brcbValues[rcbName]
+		c.server.mu.Unlock()
+		if state == nil {
+			return fmt.Errorf("BRCB not found: %s", rcbName)
+		}
+		if !state.setFieldValue(fieldName, value) {
+			return fmt.Errorf("BRCB field not found: %s", fieldName)
+		}
+		return nil
+	}
+
 	node := c.server.model.FindNode(spec.DomainID + "/" + dotifyItemID(spec.ItemID))
 	if node == nil {
 		return fmt.Errorf("not found: %s/%s", spec.DomainID, spec.ItemID)
@@ -978,6 +1413,79 @@ func buildStructureFromLN(ln *model.LogicalNode) *mms.Value {
 		if do, ok := child.(*model.DataObject); ok {
 			members = append(members, buildStructureFromDO(do))
 		}
+	}
+	return mms.NewStructure(members)
+}
+
+// buildStructureFromLNWithBR builds the whole-LN value in the same order as buildTypeSpecLN:
+// FC groups sorted alphabetically, with BR inserted in its alphabetical position.
+func (c *serverConn) buildStructureFromLNWithBR(ln *model.LogicalNode, ldInst string) *mms.Value {
+	// Collect FC groups (same logic as buildTypeSpecLN)
+	fcDOs := make(map[string][]*model.DataObject) // FC → DOs (sorted)
+	fcOrder := []string{}
+
+	for _, do := range ln.DataObjects() {
+		doFCs := map[string]bool{}
+		for _, child := range do.Children() {
+			if da, ok := child.(*model.DataAttribute); ok {
+				doFCs[da.FC.String()] = true
+			}
+		}
+		for fc := range doFCs {
+			if fc == "" || fc == "NONE" {
+				continue
+			}
+			found := false
+			for _, f := range fcOrder {
+				if f == fc {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fcOrder = append(fcOrder, fc)
+			}
+			fcDOs[fc] = append(fcDOs[fc], do)
+		}
+	}
+	sort.Strings(fcOrder)
+
+	// Build BR group value if present (mirrors buildTypeSpecBRGroup logic)
+	var brValue *mms.Value
+	for _, rcb := range c.server.model.RCBs {
+		if rcb.Buffered && rcb.LDInst == ldInst && rcb.LNName == ln.Name() {
+			state := c.server.brcbValues[rcb.Name]
+			if state != nil {
+				brValue = mms.NewStructure([]*mms.Value{mms.NewStructure(state.asValues())})
+			}
+			break
+		}
+	}
+
+	var members []*mms.Value
+	brInserted := false
+	for _, fc := range fcOrder {
+		if brValue != nil && !brInserted && fc > "BR" {
+			members = append(members, brValue)
+			brInserted = true
+		}
+		// Build FC group value (DOs sorted alphabetically)
+		dos := fcDOs[fc]
+		sort.Slice(dos, func(i, j int) bool { return dos[i].Name() < dos[j].Name() })
+		var doMembers []*mms.Value
+		for _, do := range dos {
+			var dMembers []*mms.Value
+			for _, child := range do.Children() {
+				if da, ok := child.(*model.DataAttribute); ok && da.FC.String() == fc {
+					dMembers = append(dMembers, buildValueFromDA(da))
+				}
+			}
+			doMembers = append(doMembers, mms.NewStructure(dMembers))
+		}
+		members = append(members, mms.NewStructure(doMembers))
+	}
+	if brValue != nil && !brInserted {
+		members = append(members, brValue)
 	}
 	return mms.NewStructure(members)
 }

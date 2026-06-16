@@ -420,6 +420,8 @@ type ReportControlBlock struct {
 	IntgPd       uint32
 	Indexed      bool
 	MaxInstances int
+	LDInst       string // parent logical device instance name (e.g. "Device1")
+	LNName       string // parent logical node name (e.g. "LLN0")
 }
 
 // GSEControlBlock defines parameters for a GOOSE control block.

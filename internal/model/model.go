@@ -65,6 +65,22 @@ func BuildModel() *imodel.IedModel {
 	ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/MMXU1.Mod.ctlModel", FC: common.FC_CF})
 	iedModel.DataSets = append(iedModel.DataSets, ds21)
 
+	iedModel.RCBs = append(iedModel.RCBs, &imodel.ReportControlBlock{
+		Name:         "LLN0_Events_BuffRep01",
+		DataSetRef:   "dataset1",
+		Buffered:     true,
+		RptID:        "LLN0$RP$brcbEV1",
+		ConfRev:      1,
+		TrgOps:       common.TriggerDataChanged | common.TriggerIntegrity | common.TriggerGI,
+		OptFields:    common.ReportOptSeqNum | common.ReportOptTimeStamp | common.ReportOptReasonForInclusion | common.ReportOptDataSet | common.ReportOptBufferOverflow | common.ReportOptEntryID | common.ReportOptConfRev,
+		BufTime:      50,
+		IntgPd:       900000,
+		Indexed:      true,
+		MaxInstances: 1,
+		LDInst:       "Device1",
+		LNName:       "LLN0",
+	})
+
 	// Logical Node: LPHD1
 	ln22 := imodel.NewLogicalNode("LPHD1", ld1)
 

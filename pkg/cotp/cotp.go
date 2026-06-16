@@ -136,10 +136,22 @@ func (c *Conn) Accept() error {
 	return nil
 }
 
-// Send sends a COTP Data (DT) PDU containing payload.
+// Send sends payload as one or more COTP DT PDUs, segmenting if the payload
+// exceeds the negotiated TPDU size. The receiver reassembles segments by reading
+// DT PDUs until EOT=1 (see Receive).
 func (c *Conn) Send(payload []byte) error {
-	dt := buildDT(payload)
-	return c.sendRaw(dt)
+	// DT header is 3 bytes (LI + PDU-type + TPDU-NR/EOT).
+	// Max user data per TPDU = (1 << TPDUSizeCode) - 3.
+	maxChunk := (1 << int(c.opts.TPDUSizeCode)) - 3
+	for {
+		if len(payload) <= maxChunk {
+			return c.sendRaw(buildDTSegment(payload, true))
+		}
+		if err := c.sendRaw(buildDTSegment(payload[:maxChunk], false)); err != nil {
+			return err
+		}
+		payload = payload[maxChunk:]
+	}
 }
 
 // Receive reads one complete COTP TSDU and returns its payload.
@@ -259,7 +271,8 @@ func (c *Conn) buildCC() []byte {
 	return buf
 }
 
-// parseCR parses a Connection Request PDU.
+// parseCR parses a Connection Request PDU and negotiates TPDU size.
+// The negotiated size is min(our default, client's proposed), stored in c.opts.TPDUSizeCode.
 func (c *Conn) parseCR(buf []byte) error {
 	if len(buf) < 7 {
 		return fmt.Errorf("COTP: CR too short (%d)", len(buf))
@@ -268,6 +281,25 @@ func (c *Conn) parseCR(buf []byte) error {
 		return fmt.Errorf("COTP: expected CR (0xE0), got 0x%02X", buf[1])
 	}
 	c.remoteRef = binary.BigEndian.Uint16(buf[4:6])
+
+	// Parse variable-length options that follow the fixed 7-byte header.
+	li := int(buf[0]) // header length including all bytes after LI itself
+	i := 7            // first option byte (after LI + pduType + dstRef(2) + srcRef(2) + class(1))
+	for i < li+1 && i+1 < len(buf) {
+		code := buf[i]
+		length := int(buf[i+1])
+		if i+2+length > len(buf) {
+			break
+		}
+		if code == optTPDUSize && length == 1 {
+			proposed := buf[i+2]
+			// Negotiate: take the smaller of the two sides.
+			if proposed < c.opts.TPDUSizeCode {
+				c.opts.TPDUSizeCode = proposed
+			}
+		}
+		i += 2 + length
+	}
 	return nil
 }
 
@@ -282,15 +314,17 @@ func (c *Conn) parseCC(buf []byte) error {
 	return nil
 }
 
-// buildDT builds a Data PDU for the given payload.
-func buildDT(payload []byte) []byte {
-	// DT header: LI(1) + PDU-type(1) + TPDU-number+EOT(1)
-	hdrLen := 2 // LI byte + 2 bytes = LI=2, but LI does not include itself
-	// Standard: LI = number of header octets following LI = 2
+// buildDTSegment builds one COTP DT PDU segment.
+// eot=true sets the EOT bit (last segment); eot=false marks an intermediate segment.
+func buildDTSegment(payload []byte, eot bool) []byte {
 	buf := make([]byte, 3+len(payload))
-	buf[0] = byte(hdrLen) // LI = 2
+	buf[0] = 0x02 // LI = 2 (two bytes follow: PDU-type + TPDU-NR/EOT)
 	buf[1] = pduDT
-	buf[2] = 0x80 // TPDU-NR=0, EOT=1
+	if eot {
+		buf[2] = 0x80 // TPDU-NR=0, EOT=1
+	} else {
+		buf[2] = 0x00 // TPDU-NR=0, EOT=0
+	}
 	copy(buf[3:], payload)
 	return buf
 }
