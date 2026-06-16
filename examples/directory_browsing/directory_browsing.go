@@ -51,6 +51,7 @@ import (
 	"time"
 
 	"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/client"
+	"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
 // node is one element in the object tree.
@@ -87,17 +88,29 @@ func (n *node) print(depth int) {
 func main() {
 	host := "localhost"
 	port := 102
+	debug := false
 
-	if len(os.Args) > 1 {
-		host = os.Args[1]
+	positional := []string{}
+	for _, a := range os.Args[1:] {
+		if a == "-debug" || a == "--debug" {
+			debug = true
+		} else {
+			positional = append(positional, a)
+		}
 	}
-	if len(os.Args) > 2 {
+	if len(positional) > 0 {
+		host = positional[0]
+	}
+	if len(positional) > 1 {
 		var err error
-		port, err = strconv.Atoi(os.Args[2])
+		port, err = strconv.Atoi(positional[1])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "invalid port: %v\n", err)
 			os.Exit(1)
 		}
+	}
+	if debug {
+		mms.SetDebug(true)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -135,12 +148,13 @@ func main() {
 		}
 
 		// Build a tree from the flat $-separated name list and print it.
-		root := newNode(device)
+		//root := newNode(device)
 		for _, name := range names {
-			root.insert(name)
+			fmt.Printf(" %s\n", name)
+			//root.insert(name)
 		}
-		for _, child := range root.children {
-			child.print(1)
-		}
+		//for _, child := range root.children {
+		//	child.print(1)
+		//}
 	}
 }

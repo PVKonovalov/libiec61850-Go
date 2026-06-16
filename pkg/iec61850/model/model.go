@@ -42,7 +42,7 @@ import (
 	"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
 
-// NodeType identifies the type of a model node.
+// NodeType identifies the type of model node.
 type NodeType int
 
 const (
@@ -347,6 +347,22 @@ func NewDataAttribute(name string, fc common.FunctionalConstraint, attrType comm
 	return da
 }
 
+// NewSubDataAttribute creates a sub data attribute (child of a CONSTRUCTED DataAttribute).
+func NewSubDataAttribute(name string, fc common.FunctionalConstraint, attrType common.DataAttributeType, parent *DataAttribute) *DataAttribute {
+	da := &DataAttribute{
+		ArrayIndex: -1,
+		FC:         fc,
+		AttrType:   attrType,
+	}
+	da.name = name
+	da.nodeType = NodeTypeDataAttribute
+	da.parent = parent
+	if parent != nil {
+		parent.addChild(da)
+	}
+	return da
+}
+
 // Path returns the full path of this data attribute, including FC.
 func (da *DataAttribute) Path() string {
 	if da.parent == nil {
@@ -404,6 +420,8 @@ type ReportControlBlock struct {
 	IntgPd       uint32
 	Indexed      bool
 	MaxInstances int
+	LDInst       string // parent logical device instance name (e.g. "Device1")
+	LNName       string // parent logical node name (e.g. "LLN0")
 }
 
 // GSEControlBlock defines parameters for a GOOSE control block.
