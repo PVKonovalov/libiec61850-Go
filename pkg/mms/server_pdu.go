@@ -531,6 +531,16 @@ func TypeSpecOctetString(maxBytes int) []byte {
 // TypeSpecUTCTime encodes an MMS UTC-time TypeSpecification.
 func TypeSpecUTCTime() []byte { return asn1ber.EncodeContextTLV(17, false, nil) }
 
+// TypeSpecArray encodes an MMS array TypeSpecification.
+// count is the number of elements; elementTypeSpec is the already-encoded element TypeSpec.
+// Per ASN.1: array [1] CONSTRUCTED { numberOfElements [1] INTEGER, elementType [2] EXPLICIT TypeSpecification }
+func TypeSpecArray(count int, elementTypeSpec []byte) []byte {
+	var body []byte
+	body = append(body, asn1ber.EncodeContextTLV(1, false, asn1ber.EncodeIntegerContent(int64(count)))...)
+	body = append(body, asn1ber.EncodeContextTLV(2, true, elementTypeSpec)...)
+	return asn1ber.EncodeContextTLV(1, true, body)
+}
+
 // TypeSpecBinaryTime encodes an MMS binary-time TypeSpecification.
 // size must be 4 or 6 (bytes). Per ASN.1: binarytime BOOLEAN (true=6-byte, false=4-byte).
 func TypeSpecBinaryTime(size int) []byte {

@@ -35,12 +35,15 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	generatedModel "github.com/PVKonovalov/libiec61850-Go/internal/model"
+	imodel "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/model"
 	"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/server"
 	"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
 )
@@ -70,6 +73,9 @@ func main() {
 
 	iedModel := generatedModel.BuildModel()
 
+	totWMagF, _ := iedModel.FindNode("Device1/MMXU2.TotW.mag.f").(*imodel.DataAttribute)
+	totWT, _ := iedModel.FindNode("Device1/MMXU2.TotW.t").(*imodel.DataAttribute)
+
 	iedServer := server.NewIedServer(iedModel, nil)
 	if err := iedServer.Start("0.0.0.0", port); err != nil {
 		fmt.Printf("Starting server failed: %v\n", err)
@@ -79,8 +85,30 @@ func main() {
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
 
+	start := time.Now()
+	updateTicker := time.NewTicker(1 * time.Second)
+
+	for {
+		select {
+		case <-sigCh:
+			updateTicker.Stop()
+			goto exit
+		case <-updateTicker.C:
+			// Update some values in the model every second
+			now := time.Now()
+			elapsed := now.Sub(start).Seconds()
+			v := float32(math.Sin(2 * math.Pi * elapsed / 30.0))
+			if totWMagF != nil {
+				iedServer.UpdateAttributeValue(totWMagF, mms.NewFloat32(v))
+			}
+			if totWT != nil {
+				iedServer.UpdateAttributeValue(totWT, mms.NewUTCTime(mms.UTCTimeFromTime(now)))
+			}
+		}
+	}
+
+exit:
 	fmt.Println("Stopping server...")
 	iedServer.Stop()
 }

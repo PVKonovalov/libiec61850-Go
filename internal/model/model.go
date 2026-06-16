@@ -249,10 +249,24 @@ func BuildModel() *imodel.IedModel {
 	do91 := imodel.NewDataObject("SchdAbsTm", ln67)
 	da92 := imodel.NewDataAttribute("val", common.FC_SP, common.TypeFLOAT32, do91)
 	da92.TriggerOptions = common.TriggerDataChanged
-	da92.Value = mms.NewFloat32(0)
+	da92.ElementCount = 255
+	{
+		elems := make([]*mms.Value, 255)
+		for i := range elems {
+			elems[i] = mms.NewFloat32(0)
+		}
+		da92.Value = mms.NewArray(elems)
+	}
 	da93 := imodel.NewDataAttribute("time", common.FC_SP, common.TypeTimestamp, do91)
 	da93.TriggerOptions = common.TriggerDataChanged
-	da93.Value = mms.NewUTCTime(mms.UTCTime{})
+	da93.ElementCount = 255
+	{
+		elems := make([]*mms.Value, 255)
+		for i := range elems {
+			elems[i] = mms.NewUTCTime(mms.UTCTime{})
+		}
+		da93.Value = mms.NewArray(elems)
+	}
 
 	// Logical Node: MMXU1
 	ln94 := imodel.NewLogicalNode("MMXU1", ld1)

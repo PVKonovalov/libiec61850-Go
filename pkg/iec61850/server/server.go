@@ -832,7 +832,7 @@ func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string, rcbs []*model.
 		}
 	}
 
-	// LN$FC$DO[$DA...] — return type spec for the specific FC-grouped data object
+	// LN$FC$DO[$DA...] — return type spec for the specific FC-grouped data object or sub-DA
 	if len(parts) < 3 {
 		return nil
 	}
@@ -846,7 +846,11 @@ func buildTypeSpecForItem(ld *model.LogicalDevice, itemID string, rcbs []*model.
 			if do.Name() != doName {
 				continue
 			}
-			return buildTypeSpecDO(do, fcStr)
+			if len(parts) == 3 {
+				return buildTypeSpecDO(do, fcStr)
+			}
+			// LN$FC$DO$DA[$subDA...] — find the specific DA/sub-DA by traversing children
+			return buildTypeSpecForDAPath(do, parts[3:])
 		}
 	}
 	return nil
@@ -998,6 +1002,30 @@ func buildTypeSpecDO(do *model.DataObject, fcFilter string) []byte {
 	return buildTypeSpecDAsAsStructure(das)
 }
 
+// buildTypeSpecForDAPath traverses a chain of DA names (e.g. ["mag","f"]) starting from a DO,
+// and returns the TypeSpec for the leaf DA. Returns nil if the path doesn't resolve.
+func buildTypeSpecForDAPath(do *model.DataObject, daNames []string) []byte {
+	var current model.Node = do
+	for _, name := range daNames {
+		found := false
+		for _, child := range current.Children() {
+			da, ok := child.(*model.DataAttribute)
+			if ok && da.Name() == name {
+				current = da
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+	}
+	if da, ok := current.(*model.DataAttribute); ok {
+		return buildTypeSpecDA(da)
+	}
+	return nil
+}
+
 // buildTypeSpecDAsAsStructure builds a STRUCTURE TypeSpec from a list of data attributes.
 func buildTypeSpecDAsAsStructure(das []*model.DataAttribute) []byte {
 	var comps []mms.TypeSpecComponent
@@ -1013,6 +1041,16 @@ func buildTypeSpecDAsAsStructure(das []*model.DataAttribute) []byte {
 // buildTypeSpecDA maps a DataAttribute to its MMS TypeSpecification bytes.
 // For CONSTRUCTED DAs (TypeConstructed or any DA with sub-DA children), emits a STRUCTURE.
 func buildTypeSpecDA(da *model.DataAttribute) []byte {
+	// Array DA: wrap element type in MMS array TypeSpecification.
+	if da.ElementCount > 0 {
+		elemSpec := buildTypeSpecDAScalar(da)
+		return mms.TypeSpecArray(da.ElementCount, elemSpec)
+	}
+	return buildTypeSpecDAScalar(da)
+}
+
+// buildTypeSpecDAScalar builds the TypeSpec for a single element (ignoring ElementCount).
+func buildTypeSpecDAScalar(da *model.DataAttribute) []byte {
 	// If the DA has sub-DA children it is CONSTRUCTED regardless of AttrType.
 	if subs := da.Children(); len(subs) > 0 {
 		var comps []mms.TypeSpecComponent
@@ -1177,7 +1215,8 @@ func (c *serverConn) resolveVariable(spec mms.VariableSpecification) (*mms.Value
 		return buildStructureByFC(ln, parts[1])
 	default:
 		// "LN$FC$DO[$DA...]" — strip FC (parts[1]) and look up by DO[.DA...]
-		dotPath := spec.DomainID + "/" + parts[0] + "." + strings.Join(parts[2:], ".")
+		// Use ld.Name() (the model name e.g. "Device1") not spec.DomainID ("SampleIEDDevice1")
+		dotPath := ld.Name() + "/" + parts[0] + "." + strings.Join(parts[2:], ".")
 		node := c.server.model.FindNode(dotPath)
 		if node == nil {
 			return nil, fmt.Errorf("not found: %s", dotPath)
