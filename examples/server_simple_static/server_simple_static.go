@@ -68,7 +68,7 @@ func main() {
 		}
 	}
 	if debug {
-		mms.SetDebugLevel(mms.DebugTrace)
+		mms.SetLogLevel(mms.LogDebug)
 	}
 
 	iedModel := generatedModel.BuildModel()

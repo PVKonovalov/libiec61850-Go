@@ -110,7 +110,7 @@ func main() {
 		}
 	}
 	if debug {
-		mms.SetDebugLevel(mms.DebugTrace)
+		mms.SetLogLevel(mms.LogDebug)
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
