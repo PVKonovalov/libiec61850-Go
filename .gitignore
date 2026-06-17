@@ -33,4 +33,6 @@ go.work.sum
 .DS_Store
 pcap/
 server_simple_static
+internal/model2
+examples/server_simple_static2
 
