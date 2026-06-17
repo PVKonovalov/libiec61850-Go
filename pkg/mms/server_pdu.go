@@ -53,7 +53,7 @@ const (
 // ParseConfirmedRequest parses a ConfirmedRequestPDU and returns the
 // invokeID, service tag, and service-specific content.
 func ParseConfirmedRequest(buf []byte) (invokeID uint32, svcTag int, svcContent []byte, err error) {
-	DebugHex("server: ConfirmedRequest recv", buf)
+	DebugHex("[MMS] ConfirmedRequest recv", buf)
 	if len(buf) < 2 || buf[0] != tagConfirmedRequest {
 		return 0, 0, nil, fmt.Errorf("mms: expected ConfirmedRequestPDU, got 0x%02X", buf[0])
 	}
@@ -89,7 +89,7 @@ func ParseConfirmedRequest(buf []byte) (invokeID uint32, svcTag int, svcContent 
 // ParseAARQ parses an ACSE AARQ PDU received by the server.
 // Returns the MMS user data extracted from the user-information field.
 func ParseAARQ(buf []byte) ([]byte, error) {
-	DebugHex("server: AARQ recv", buf)
+	DebugHex("[MMS] AARQ recv", buf)
 	if len(buf) < 2 {
 		return nil, fmt.Errorf("mms: AARQ too short")
 	}
@@ -192,8 +192,7 @@ func ParseGetNameListRequestContent(content []byte) (*GetNameListRequest, error)
 			req.ContinueAfter = string(tlv.Value)
 		}
 	}
-	debugf("server: GetNameList objectClass=%d scope=%d domain=%q continueAfter=%q",
-		req.ObjectClass, req.ObjectScope, req.DomainID, req.ContinueAfter)
+	// Logged at higher level (server.go) with event name and conn context.
 	return req, nil
 }
 
@@ -365,7 +364,7 @@ var appContextNameMMS = []byte{0x28, 0xCA, 0x22, 0x02, 0x03}
 // BuildAARE builds an ACSE AARE (Association Response) PDU wrapping the MMS initiate response.
 // Uses the libiec61850-compatible EXTERNAL (0x28) wrapping for user-information.
 func BuildAARE(mmsResponse []byte) []byte {
-	debugf("server: building AARE with MMS initiate response (%d bytes)", len(mmsResponse))
+	Logf(RoleServer, EventInitiate, "sending AARE pduSize=%d", len(mmsResponse))
 	var body []byte
 
 	// [1] application-context-name

@@ -302,7 +302,7 @@ func ParseInitiateRequest(buf []byte) (int32, int16, error) {
 			}
 		}
 	}
-	debugf("client->server initiate: localDetail=%d maxOutstanding=%d", localDetail, maxOutstanding)
+	Logf(RoleClient, EventInitiate, "localDetail=%d maxOutstanding=%d", localDetail, maxOutstanding)
 	return localDetail, maxOutstanding, nil
 }
 
@@ -381,7 +381,7 @@ func ParseInitiateResponse(buf []byte) (int32, int16, error) {
 			}
 		}
 	}
-	debugf("server->client initiate: localDetail=%d maxOutstanding=%d", localDetail, maxOutstanding)
+	Logf(RoleServer, EventInitiate, "localDetail=%d maxOutstanding=%d", localDetail, maxOutstanding)
 	return localDetail, maxOutstanding, nil
 }
 

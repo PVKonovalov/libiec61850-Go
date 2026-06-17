@@ -439,9 +439,22 @@ func (c *serverConn) close() {
 	c.cotp.Close()
 }
 
+// logf emits a structured IEC 61850 log line tagged with this connection's ID.
+func (c *serverConn) logf(event string, format string, args ...any) {
+	if format != "" {
+		mms.Logf(mms.RoleServer, event, "conn=%d "+format, append([]any{c.id}, args...)...)
+	} else {
+		mms.Logf(mms.RoleServer, event, "conn=%d", c.id)
+	}
+}
+
 func (c *serverConn) handle() {
 	defer c.server.removeConn(c.id)
 	defer c.cotp.Close()
+
+	peer := c.cotp.RemoteAddr()
+	c.logf(mms.EventConnect, "peer=%s", peer)
+	defer c.logf(mms.EventDisconnect, "peer=%s", peer)
 
 	// 1. Read CN SPDU and send AC SPDU
 	//    COTP → Session CN → Presentation CP → ACSE AARQ → MMS Initiate
@@ -466,7 +479,8 @@ func (c *serverConn) handle() {
 	}
 
 	// Accept with default MMS parameters
-	_, _, _ = mms.ParseInitiateRequest(mmsInitiateData)
+	localDetail, maxOutstanding, _ := mms.ParseInitiateRequest(mmsInitiateData)
+	c.logf(mms.EventInitiate, "peer=%s localDetail=%d maxOutstanding=%d", peer, localDetail, maxOutstanding)
 	mmsInitResp := mms.EncodeInitiateResponse()
 	aare := mms.BuildAARE(mmsInitResp)
 	cpaPDU := isopresentation.BuildConnectAcceptPDU(aare)
@@ -524,8 +538,8 @@ func (c *serverConn) dispatchRequest(data []byte) ([]byte, error) {
 	switch pduType {
 	case 0xA0: // ConfirmedRequest
 		return c.handleConfirmedRequest(data)
-	case 0xAB: // ConcludeRequest
-		// Orderly shutdown
+	case 0xAB: // ConcludeRequest — orderly shutdown
+		c.logf(mms.EventDisconnect, "reason=conclude")
 		resp := []byte{0xAC, 0x00} // ConcludeResponse
 		c.cotp.Send(resp)
 		return nil, fmt.Errorf("conclude")
@@ -538,23 +552,25 @@ func (c *serverConn) dispatchRequest(data []byte) ([]byte, error) {
 func (c *serverConn) handleConfirmedRequest(data []byte) ([]byte, error) {
 	invokeID, svcTag, svcContent, err := mms.ParseConfirmedRequest(data)
 	if err != nil {
+		c.logf(mms.EventError, "invokeID=? parse error: %v", err)
 		return mms.BuildErrorResponse(0, mms.ErrOther), nil
 	}
 
 	switch svcTag {
-	case mms.SvcRead: // Read
+	case mms.SvcRead:
 		return c.handleRead(invokeID, svcContent)
-	case mms.SvcWrite: // Write
+	case mms.SvcWrite:
 		return c.handleWrite(invokeID, svcContent)
-	case mms.SvcGetNameList: // GetNameList
+	case mms.SvcGetNameList:
 		return c.handleGetNameList(invokeID, svcContent)
-	case mms.SvcIdentify: // Identify
+	case mms.SvcIdentify:
 		return c.handleIdentify(invokeID)
-	case mms.SvcGetVarAccessAttr: // GetVariableAccessAttributes
+	case mms.SvcGetVarAccessAttr:
 		return c.handleGetVarAccessAttributes(invokeID, svcContent)
-	case mms.SvcGetNamedVarListAttr: // GetNamedVariableListAttributes
+	case mms.SvcGetNamedVarListAttr:
 		return c.handleGetNamedVarListAttr(invokeID, svcContent)
 	default:
+		c.logf(mms.EventError, "invokeID=%d svcTag=0x%02X reason=unsupported", invokeID, svcTag)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrOther), nil
 	}
 }
@@ -563,14 +579,17 @@ func (c *serverConn) handleConfirmedRequest(data []byte) ([]byte, error) {
 func (c *serverConn) handleRead(invokeID uint32, content []byte) ([]byte, error) {
 	specs, err := mms.ParseReadRequestContent(content)
 	if err != nil {
+		c.logf(mms.EventError, "invokeID=%d svc=Read reason=%v", invokeID, err)
 		return mms.BuildErrorResponse(invokeID, mms.ErrInvalidArguments), nil
 	}
 
 	var results []*mms.ReadResult
 	for _, spec := range specs {
+		c.logf(mms.EventRead, "invokeID=%d domain=%s item=%s", invokeID, spec.DomainID, spec.ItemID)
 		value, err := c.resolveVariable(spec)
 		result := &mms.ReadResult{}
 		if err != nil {
+			c.logf(mms.EventError, "invokeID=%d domain=%s item=%s reason=%v", invokeID, spec.DomainID, spec.ItemID, err)
 			result.IsError = true
 			result.Error = mms.DataAccessErrorObjectNonExistent
 		} else {
@@ -586,11 +605,13 @@ func (c *serverConn) handleRead(invokeID uint32, content []byte) ([]byte, error)
 func (c *serverConn) handleWrite(invokeID uint32, content []byte) ([]byte, error) {
 	specs, values, err := mms.ParseWriteRequestContent(content)
 	if err != nil {
+		c.logf(mms.EventError, "invokeID=%d svc=Write reason=%v", invokeID, err)
 		return mms.BuildErrorResponse(invokeID, mms.ErrInvalidArguments), nil
 	}
 
 	var writeResults []mms.WriteResult
 	for i, spec := range specs {
+		c.logf(mms.EventWrite, "invokeID=%d domain=%s item=%s", invokeID, spec.DomainID, spec.ItemID)
 		var val *mms.Value
 		if i < len(values) {
 			val = values[i]
@@ -611,18 +632,22 @@ func (c *serverConn) handleWrite(invokeID uint32, content []byte) ([]byte, error
 func (c *serverConn) handleGetNameList(invokeID uint32, content []byte) ([]byte, error) {
 	req, err := mms.ParseGetNameListRequestContent(content)
 	if err != nil {
+		c.logf(mms.EventError, "invokeID=%d svc=GetNameList reason=%v", invokeID, err)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrInvalidArguments), nil
 	}
 
 	var names []string
 	switch req.ObjectClass {
 	case mms.ObjectClassType(mms.ObjectClassDomain): // list logical devices (MMS domains)
+		c.logf(mms.EventReadNameListLD, "invokeID=%d continueAfter=%q", invokeID, req.ContinueAfter)
 		for _, ld := range c.server.model.LogicalDevices() {
 			names = append(names, c.mmsDomainName(ld))
 		}
 	case mms.ObjectClassType(mms.ObjectClassNamedVariable): // list named variables within a domain
+		c.logf(mms.EventReadNameList, "invokeID=%d domain=%s continueAfter=%q", invokeID, req.DomainID, req.ContinueAfter)
 		names = c.namedVariablesForDomain(req.DomainID)
 	case mms.ObjectClassType(mms.ObjectClassNamedVariableList): // list data sets within a domain
+		c.logf(mms.EventReadNameListDS, "invokeID=%d domain=%s continueAfter=%q", invokeID, req.DomainID, req.ContinueAfter)
 		names = c.namedVariableListsForDomain(req.DomainID)
 	default:
 		// Return empty list for unsupported object classes
@@ -778,20 +803,23 @@ func (c *serverConn) findLD(mmsDomain string) *model.LogicalDevice {
 
 // handleGetVarAccessAttributes serves a GetVariableAccessAttributes request.
 func (c *serverConn) handleGetVarAccessAttributes(invokeID uint32, content []byte) ([]byte, error) {
-	// Parse the variableSpecification: [0] CONSTRUCTED { [1] domainSpecific { visStr domId, visStr itemId } }
 	spec, err := mms.ParseGetVarAccessAttributesRequest(content)
 	if err != nil || spec.DomainID == "" {
+		c.logf(mms.EventError, "invokeID=%d svc=GetVarAccessAttr reason=%v", invokeID, err)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrOther), nil
 	}
 
+	c.logf(mms.EventReadVarAttr, "invokeID=%d domain=%s item=%s", invokeID, spec.DomainID, spec.ItemID)
+
 	ld := c.findLD(spec.DomainID)
 	if ld == nil {
+		c.logf(mms.EventError, "invokeID=%d domain=%s reason=domain_not_found", invokeID, spec.DomainID)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
 	}
 
-	// Look up the named item: just LN name, or LN$FC$DO, or LN$BR[...]
 	typeSpec := buildTypeSpecForItem(ld, spec.ItemID, c.server.model.RCBs)
 	if typeSpec == nil {
+		c.logf(mms.EventError, "invokeID=%d domain=%s item=%s reason=item_not_found", invokeID, spec.DomainID, spec.ItemID)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
 	}
 
@@ -1176,6 +1204,7 @@ func splitRef(ref string) []string {
 
 // handleIdentify serves an Identify request, returning server information.
 func (c *serverConn) handleIdentify(invokeID uint32) ([]byte, error) {
+	c.logf(mms.EventIdentify, "invokeID=%d", invokeID)
 	return mms.BuildIdentifyResponse(invokeID, "libiec61850-Go", "1.0.0", "IEC 61850 Server"), nil
 }
 
@@ -1317,8 +1346,11 @@ func buildStructureByFC(ln *model.LogicalNode, fc string) (*mms.Value, error) {
 func (c *serverConn) handleGetNamedVarListAttr(invokeID uint32, content []byte) ([]byte, error) {
 	domainID, itemID, err := mms.ParseGetNamedVarListAttrRequest(content)
 	if err != nil || domainID == "" || itemID == "" {
+		c.logf(mms.EventError, "invokeID=%d svc=GetNamedVarListAttr reason=%v", invokeID, err)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
 	}
+
+	c.logf(mms.EventReadDsAttr, "invokeID=%d domain=%s dataset=%s", invokeID, domainID, itemID)
 
 	// Find the dataset
 	var ds *model.DataSet
@@ -1329,6 +1361,7 @@ func (c *serverConn) handleGetNamedVarListAttr(invokeID uint32, content []byte) 
 		}
 	}
 	if ds == nil {
+		c.logf(mms.EventError, "invokeID=%d domain=%s dataset=%s reason=not_found", invokeID, domainID, itemID)
 		return mms.BuildServiceErrorResponse(invokeID, mms.ErrAccessObjectNonExistent), nil
 	}
 
