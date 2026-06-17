@@ -70,7 +70,7 @@ func main() {
 		}
 	}
 	if debug {
-		mms.SetDebug(true)
+		mms.SetDebugLevel(mms.DebugTrace)
 	}
 
 	// ---- Build the data model ----
