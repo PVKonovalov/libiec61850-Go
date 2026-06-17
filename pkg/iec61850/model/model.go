@@ -82,10 +82,11 @@ func (n *baseNode) addChild(child Node) {
 // It holds one or more LogicalDevices and associated data sets.
 type IedModel struct {
 	baseNode
-	DataSets []*DataSet
-	RCBs     []*ReportControlBlock
-	GSECBs   []*GSEControlBlock
-	SVCBs    []*SVControlBlock
+	DataSets  []*DataSet
+	RCBs      []*ReportControlBlock
+	GSECBs    []*GSEControlBlock
+	SVCBs     []*SVControlBlock
+	nodeCache map[string]Node
 }
 
 // NewIedModel creates a new empty IED model with the given name.
@@ -93,6 +94,7 @@ func NewIedModel(name string) *IedModel {
 	m := &IedModel{}
 	m.name = name
 	m.nodeType = NodeTypeLogicalDevice
+	m.nodeCache = make(map[string]Node)
 	return m
 }
 
@@ -117,7 +119,11 @@ func (m *IedModel) LogicalDevices() []*LogicalDevice {
 }
 
 // FindNode finds a node by its object reference path.
+// Results are cached after the first lookup.
 func (m *IedModel) FindNode(objectRef string) Node {
+	if n, ok := m.nodeCache[objectRef]; ok {
+		return n
+	}
 	// Parse "LD/LN.DO.DA" or "LD/LN$FC$DO$DA"
 	slashIdx := strings.IndexByte(objectRef, '/')
 	if slashIdx < 0 {
@@ -126,12 +132,15 @@ func (m *IedModel) FindNode(objectRef string) Node {
 	ldName := objectRef[:slashIdx]
 	rest := objectRef[slashIdx+1:]
 
+	var result Node
 	for _, c := range m.children {
 		if ld, ok := c.(*LogicalDevice); ok && ld.name == ldName {
-			return ld.findInLD(rest)
+			result = ld.findInLD(rest)
+			break
 		}
 	}
-	return nil
+	m.nodeCache[objectRef] = result
+	return result
 }
 
 // LogicalDevice (LD) is a virtual device hosted by an IED.
@@ -179,7 +188,7 @@ func (ld *LogicalDevice) findInLD(rest string) Node {
 	// rest = "LN.DO.DA" or "LN$FC$DO$DA"
 	// Normalize $-separated form to dot-separated for lookup
 	normalized := strings.ReplaceAll(rest, "$", ".")
-	parts := strings.SplitN(normalized, ".", 4)
+	parts := strings.Split(normalized, ".")
 	if len(parts) == 0 {
 		return nil
 	}
