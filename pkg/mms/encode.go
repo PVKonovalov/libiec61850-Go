@@ -92,8 +92,12 @@ func EncodeValue(v *Value) ([]byte, error) {
 		return encodePrimitive(tagMMSFloat, content), nil
 
 	case TypeBitString:
-		numBytes := (v.bitStrSize + 7) / 8
-		unused := 8*numBytes - v.bitStrSize
+		size := v.bitStrSize
+		if size < 0 {
+			size = -size
+		}
+		numBytes := (size + 7) / 8
+		unused := 8*numBytes - size
 		content := make([]byte, 1+numBytes)
 		content[0] = byte(unused)
 		copy(content[1:], v.bitStr)
