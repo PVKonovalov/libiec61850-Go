@@ -131,8 +131,8 @@ func EncodeValue(v *Value) ([]byte, error) {
 		return encodeConstructed(tagMMSStructureCons, body), nil
 
 	case TypeDataAccessError:
-		content := asn1ber.EncodeIntegerContent(int64(v.dataErr))
-		return encodePrimitive(tagMMSInteger, content), nil
+		// AccessResult::failure [0] DataAccessError — tag 0x80 per ISO 9506-2
+		return []byte{0x80, 0x01, byte(v.dataErr)}, nil
 
 	default:
 		return nil, fmt.Errorf("mms: unsupported type %s", v.typ)

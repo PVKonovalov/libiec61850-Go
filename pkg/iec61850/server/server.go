@@ -109,6 +109,13 @@ type brcbState struct {
 	purgeBuf    *mms.Value // [10] MMS_BOOLEAN
 	entryID     *mms.Value // [11] MMS_OCTET_STRING 8
 	timeofEntry *mms.Value // [12] MMS_BINARY_TIME 6
+
+	// subscriber is the connection that enabled reporting on this BRCB (set when RptEna=true).
+	subscriber *serverConn
+	// rcbName is the RCB model name (e.g. "LLN0_Events_BuffRep01"), used for logging.
+	rcbName string
+	// dataSetName is the bare dataset name (e.g. "dataset1"), resolved at init time.
+	dataSetName string
 }
 
 func (s *brcbState) fieldNames() []string {
@@ -185,6 +192,44 @@ func (s *brcbState) setFieldValue(name string, v *mms.Value) bool {
 	return true
 }
 
+// isRptEnaTrue returns true if the RptEna field is set to true.
+func (s *brcbState) isRptEnaTrue() bool {
+	if s.rptEna == nil || s.rptEna.Type() != mms.TypeBoolean {
+		return false
+	}
+	return s.rptEna.GetBoolean()
+}
+
+// isTrgOpsGISet returns true if GI trigger option bit is set in TrgOps.
+// TrgOps BIT_STRING: bit 5 of byte 0 = GI (from encodeTrgOpsBits: b |= 0x04 for TriggerGI).
+func (s *brcbState) isTrgOpsGISet() bool {
+	if s.trgOps == nil {
+		return false
+	}
+	b, _ := s.trgOps.GetBitString()
+	return len(b) > 0 && b[0]&0x04 != 0
+}
+
+// isTrgOpsDataChangedSet returns true if the DataChanged trigger option bit is set.
+// Bit 1 of byte 0 = DataChanged (from encodeTrgOpsBits: b |= 0x40 for TriggerDataChanged).
+func (s *brcbState) isTrgOpsDataChangedSet() bool {
+	if s.trgOps == nil {
+		return false
+	}
+	b, _ := s.trgOps.GetBitString()
+	return len(b) > 0 && b[0]&0x40 != 0
+}
+
+// nextSqNum increments the SqNum field and returns the new value.
+func (s *brcbState) nextSqNum() uint16 {
+	if s.sqNum == nil {
+		return 0
+	}
+	next := uint16(s.sqNum.GetInt32()) + 1
+	s.sqNum = mms.NewUint32(uint32(next))
+	return next
+}
+
 // encodeTrgOpsBits converts a TriggerOption bitmask to MMS BIT_STRING(-6) bytes.
 // Mirrors MmsValue_setBitStringBit calls in createTrgOps() in reporting.c.
 func encodeTrgOpsBits(t common.TriggerOption) []byte {
@@ -259,6 +304,8 @@ func newBRCBState(rcb *model.ReportControlBlock, datSetMmsRef string) *brcbState
 		purgeBuf:    mms.NewBoolean(false),
 		entryID:     mms.NewOctetString(make([]byte, 8)),
 		timeofEntry: mms.NewBinaryTime(true),
+		rcbName:     rcb.Name,
+		dataSetName: rcb.LNName + "$" + rcb.DataSetRef,
 	}
 }
 
@@ -367,11 +414,83 @@ func (s *IedServer) IsRunning() bool {
 	return s.running
 }
 
-// UpdateAttributeValue updates a data attribute value in the model.
-// This is how the server-side application sets new process values.
+// UpdateAttributeValue updates a data attribute value in the model and triggers
+// reports on any subscribed BRCB whose dataset includes this attribute and whose
+// TrgOps has DataChanged set.
 func (s *IedServer) UpdateAttributeValue(da *model.DataAttribute, value *mms.Value) {
 	da.Value = value
-	// TODO: trigger reporting for subscribed clients when trigger options match
+
+	s.mu.Lock()
+	for _, state := range s.brcbValues {
+		if state.subscriber == nil || !state.isRptEnaTrue() || !state.isTrgOpsDataChangedSet() {
+			continue
+		}
+		// Check if this data attribute is a member of the BRCB's dataset.
+		if s.daInDataSet(da, state.dataSetName) {
+			conn := state.subscriber
+			go conn.sendReport(state, false)
+		}
+	}
+	s.mu.Unlock()
+}
+
+// daInDataSet returns true if da is referenced by any member of the named dataset.
+// A member may be a leaf DataAttribute (exact match) or a DataObject (ancestor match).
+func (s *IedServer) daInDataSet(da *model.DataAttribute, dataSetName string) bool {
+	for _, ds := range s.model.DataSets {
+		if ds.Name != dataSetName {
+			continue
+		}
+		for _, m := range ds.Members {
+			node := s.model.FindNode(m.Reference)
+			switch n := node.(type) {
+			case *model.DataAttribute:
+				if n == da {
+					return true
+				}
+			case *model.DataObject:
+				if daUnderDO(da, n) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// daUnderDO returns true if da is a descendant of do with the same FC.
+func daUnderDO(da *model.DataAttribute, do *model.DataObject) bool {
+	for _, child := range do.Children() {
+		switch n := child.(type) {
+		case *model.DataAttribute:
+			if n == da {
+				return true
+			}
+			// recurse into constructed (sub-DA) children
+			if daUnderDA(da, n) {
+				return true
+			}
+		case *model.DataObject:
+			if daUnderDO(da, n) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func daUnderDA(da *model.DataAttribute, parent *model.DataAttribute) bool {
+	for _, child := range parent.Children() {
+		if sub, ok := child.(*model.DataAttribute); ok {
+			if sub == da {
+				return true
+			}
+			if daUnderDA(da, sub) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // LockDataModel acquires a read lock on the data model.
@@ -423,6 +542,14 @@ func (s *IedServer) acceptLoop() {
 func (s *IedServer) removeConn(id uint64) {
 	s.mu.Lock()
 	delete(s.conns, id)
+	// Clear any BRCB subscriptions held by this connection so no further
+	// reports are queued after disconnect.
+	for _, state := range s.brcbValues {
+		if state.subscriber != nil && state.subscriber.id == id {
+			state.subscriber = nil
+			state.rptEna = mms.NewBoolean(false)
+		}
+	}
 	s.mu.Unlock()
 }
 
@@ -1257,7 +1384,7 @@ func (c *serverConn) resolveVariable(spec mms.VariableSpecification) (*mms.Value
 			}
 			return n.Value, nil
 		case *model.DataObject:
-			return buildStructureFromDO(n), nil
+			return buildStructureFromDO(n, common.FC_NONE), nil
 		default:
 			return nil, fmt.Errorf("unsupported node type for %s", dotPath)
 		}
@@ -1391,6 +1518,93 @@ func (c *serverConn) handleGetNamedVarListAttr(invokeID uint32, content []byte) 
 	return mms.BuildGetNamedVarListAttrResponse(invokeID, false, members), nil
 }
 
+// sendReport builds and sends an unsolicited MMS InformationReport for a BRCB.
+// isGI=true sends all dataset members (General Interrogation).
+// isGI=false sends only changed members (DataChanged trigger — currently sends all).
+func (c *serverConn) sendReport(state *brcbState, isGI bool) {
+	// Collect dataset members from the model.
+	var ds *model.DataSet
+	c.server.mu.Lock()
+	// Abort if this connection was already removed (client disconnected).
+	if _, alive := c.server.conns[c.id]; !alive {
+		c.server.mu.Unlock()
+		return
+	}
+	for _, d := range c.server.model.DataSets {
+		if d.Name == state.dataSetName {
+			ds = d
+			break
+		}
+	}
+	if ds == nil {
+		c.server.mu.Unlock()
+		c.logf(mms.EventError, "sendReport: dataset %q not found for BRCB %s", state.dataSetName, state.rcbName)
+		return
+	}
+
+	// Read current values for all dataset members.
+	var values []*mms.Value
+	var refs []string
+	for _, m := range ds.Members {
+		node := c.server.model.FindNode(m.Reference)
+		if node == nil {
+			values = append(values, mms.NewDataAccessError(mms.DataAccessErrorObjectNonExistent))
+			refs = append(refs, m.Reference)
+			continue
+		}
+		switch n := node.(type) {
+		case *model.DataAttribute:
+			if n.Value != nil {
+				values = append(values, n.Value)
+			} else {
+				values = append(values, zeroValueForType(n.AttrType))
+			}
+		case *model.DataObject:
+			values = append(values, buildStructureFromDO(n, m.FC))
+		default:
+			values = append(values, mms.NewDataAccessError(mms.DataAccessErrorObjectAccessUnsupported))
+		}
+		refs = append(refs, m.Reference)
+	}
+
+	sqNum := state.nextSqNum()
+	rptIDStr := ""
+	if state.rptID != nil && state.rptID.Type() == mms.TypeVisibleString {
+		rptIDStr = state.rptID.GetVisibleString()
+	}
+	optFldsBytes, _ := state.optFlds.GetBitString()
+	datSetStr := ""
+	if state.datSet != nil && state.datSet.Type() == mms.TypeVisibleString {
+		datSetStr = state.datSet.GetVisibleString()
+	}
+	confRevVal := uint32(0)
+	if state.confRev != nil {
+		confRevVal = state.confRev.GetUint32()
+	}
+	c.server.mu.Unlock()
+
+	ts := mms.EncodeUTCTimeNow()
+	// We always send all dataset members, so all inclusion bits must be set.
+	pdu := mms.BuildInformationReport(mms.InformationReportParams{
+		RptID:     rptIDStr,
+		OptFlds:   optFldsBytes,
+		SqNum:     sqNum,
+		Timestamp: ts,
+		DatSet:    datSetStr,
+		ConfRev:   confRevVal,
+		IsGI:      true, // inclusion field: all bits set (all members sent)
+		Values:    values,
+		Refs:      refs,
+	})
+
+	wrapped := isosession.WrapDataSPDU(isopresentation.WrapUserData(pdu))
+	if err := c.cotp.Send(wrapped); err != nil {
+		c.logf(mms.EventError, "sendReport: send failed: %v", err)
+		return
+	}
+	c.logf(mms.EventRead, "report sent rcb=%s sqNum=%d isGI=%v members=%d", state.rcbName, sqNum, isGI, len(values))
+}
+
 // writeVariable writes a value to a named variable in the model.
 func (c *serverConn) writeVariable(spec mms.VariableSpecification, value *mms.Value) error {
 	parts := strings.SplitN(spec.ItemID, "$", -1)
@@ -1406,6 +1620,22 @@ func (c *serverConn) writeVariable(spec mms.VariableSpecification, value *mms.Va
 		}
 		if !state.setFieldValue(fieldName, value) {
 			return fmt.Errorf("BRCB field not found: %s", fieldName)
+		}
+		// Bind this connection as the subscriber when RptEna=true.
+		if fieldName == "RptEna" {
+			if state.isRptEnaTrue() {
+				state.subscriber = c
+			} else {
+				state.subscriber = nil
+			}
+		}
+		// Trigger GI report when GI=true is written and reporting is enabled.
+		if fieldName == "GI" && value != nil && value.Type() == mms.TypeBoolean && value.GetBoolean() {
+			if state.isRptEnaTrue() {
+				go c.sendReport(state, true)
+			}
+			// Always reset GI to false after triggering.
+			state.gi = mms.NewBoolean(false)
 		}
 		return nil
 	}
@@ -1445,15 +1675,54 @@ func dotifyItemID(itemID string) string {
 	return string(out)
 }
 
-// buildStructureFromDO builds an MMS STRUCTURE value from a DataObject's attributes.
-func buildStructureFromDO(do *model.DataObject) *mms.Value {
+// zeroValueForType returns a type-appropriate zero value for a DataAttribute
+// that has not yet been initialised, so reports never contain failure items
+// that break client phase-state machines.
+func zeroValueForType(t common.DataAttributeType) *mms.Value {
+	switch t {
+	case common.TypeBoolean:
+		return mms.NewBoolean(false)
+	case common.TypeINT8, common.TypeINT16, common.TypeINT32, common.TypeINT64, common.TypeINT128,
+		common.TypeEnumerated, common.TypeCodedEnum:
+		return mms.NewInt32(0)
+	case common.TypeINT8U, common.TypeINT16U, common.TypeINT24U, common.TypeINT32U:
+		return mms.NewUint32(0)
+	case common.TypeFLOAT32:
+		return mms.NewFloat32(0)
+	case common.TypeFLOAT64:
+		return mms.NewFloat64(0)
+	case common.TypeTimestamp:
+		return mms.NewUTCTime(mms.UTCTime{})
+	case common.TypeQuality:
+		return mms.NewQuality(common.QualityGood)
+	case common.TypeOctetString6:
+		return mms.NewOctetString(make([]byte, 6))
+	case common.TypeOctetString8:
+		return mms.NewOctetString(make([]byte, 8))
+	case common.TypeOctetString64:
+		return mms.NewOctetString(make([]byte, 64))
+	case common.TypeVisibleStr32, common.TypeVisibleStr64, common.TypeVisibleStr65,
+		common.TypeVisibleStr129, common.TypeVisibleStr255:
+		return mms.NewVisibleString("")
+	case common.TypeGenericBitStr, common.TypeTrgOps, common.TypeOptFlds, common.TypeCheck:
+		return mms.NewBitString([]byte{0x00}, 1)
+	default:
+		return mms.NewInt32(0)
+	}
+}
+
+// buildStructureFromDO builds an MMS STRUCTURE from the children of do that
+// match fc. Pass common.FC_NONE to include all functional constraints.
+func buildStructureFromDO(do *model.DataObject, fc common.FunctionalConstraint) *mms.Value {
 	var members []*mms.Value
 	for _, child := range do.Children() {
 		switch n := child.(type) {
 		case *model.DataAttribute:
-			members = append(members, buildValueFromDA(n))
+			if fc == common.FC_NONE || n.FC == fc {
+				members = append(members, buildValueFromDA(n))
+			}
 		case *model.DataObject:
-			members = append(members, buildStructureFromDO(n))
+			members = append(members, buildStructureFromDO(n, fc))
 		}
 	}
 	return mms.NewStructure(members)
@@ -1475,7 +1744,7 @@ func buildValueFromDA(da *model.DataAttribute) *mms.Value {
 	if da.Value != nil {
 		return da.Value
 	}
-	return mms.NewDataAccessError(mms.DataAccessErrorTemporarilyUnavailable)
+	return zeroValueForType(da.AttrType)
 }
 
 // buildStructureFromLN builds an MMS STRUCTURE value from all DOs in a LogicalNode.
@@ -1483,7 +1752,7 @@ func buildStructureFromLN(ln *model.LogicalNode) *mms.Value {
 	var members []*mms.Value
 	for _, child := range ln.Children() {
 		if do, ok := child.(*model.DataObject); ok {
-			members = append(members, buildStructureFromDO(do))
+			members = append(members, buildStructureFromDO(do, common.FC_NONE))
 		}
 	}
 	return mms.NewStructure(members)
