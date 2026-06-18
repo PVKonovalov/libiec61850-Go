@@ -29,6 +29,7 @@ package mms
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/PVKonovalov/libiec61850-Go/pkg/asn1ber"
 )
@@ -576,15 +577,15 @@ func BuildReadResponse(invokeID uint32, results []*ReadResult) []byte {
 
 // BuildWriteResponse builds a ConfirmedResponsePDU for a Write service.
 func BuildWriteResponse(invokeID uint32, results []WriteResult) []byte {
+	// Per ISO 9506-2 WriteResponse ASN.1 and C library (mms_write_service.c):
+	//   failure [0] = 0x80 0x01 errorCode
+	//   success [1] = 0x81 0x00
 	var listBody []byte
 	for _, result := range results {
 		if result.Success {
-			// [0] success: NULL
-			listBody = append(listBody, asn1ber.EncodeContextTLV(0, false, nil)...)
+			listBody = append(listBody, 0x81, 0x00) // [1] IMPLICIT NULL = success
 		} else {
-			// [1] failure: DataAccessError
-			errBytes := asn1ber.EncodeIntegerContent(int64(result.Error))
-			listBody = append(listBody, asn1ber.EncodeContextTLV(1, false, errBytes)...)
+			listBody = append(listBody, 0x80, 0x01, byte(result.Error)) // [0] DataAccessError = failure
 		}
 	}
 
@@ -691,6 +692,258 @@ func BuildGetNamedVarListAttrResponse(invokeID uint32, deletable bool, members [
 	// [12] CONSTRUCTED service tag
 	svcTag := appendTagLength(byte(svcGetNamedVariableListAttributes|asn1ber.ClassContext|asn1ber.Constructed), svcBody)
 	return buildConfirmedResponse(invokeID, svcTag)
+}
+
+// InformationReportParams holds all parameters needed to build an MMS InformationReport.
+type InformationReportParams struct {
+	RptID       string   // report identifier string
+	OptFlds     []byte   // optFlds BIT_STRING bytes (from brcbState.optFlds)
+	SqNum       uint16   // sequence number
+	Timestamp   []byte   // 8-byte UTC time for timeOfEntry; nil encodes as 8 zero bytes
+	DatSet      string   // dataset MMS reference (e.g. "SampleIEDDevice1/LLN0$dataset1")
+	BufOvfl     bool     // buffer overflow flag
+	ConfRev     uint32   // configuration revision
+	IsGI        bool     // true = general interrogation (include all members)
+	Values      []*Value // one per dataset member in order
+	Refs        []string // data references per member (for OptFlds dataReference bit)
+	ReasonCodes []byte   // one byte per member: reason-for-inclusion bitmask (0x04=GI, 0x40=data-change)
+}
+
+// optFldBit returns true if bit n (0=MSB of byte 0) is set in optFlds bytes.
+// The encoding follows encodeOptFldsBits:
+//
+//	bit 1 (0x40 byte0) = seqNum
+//	bit 2 (0x20 byte0) = timestamp
+//	bit 3 (0x10 byte0) = reasonForInclusion
+//	bit 4 (0x08 byte0) = dataSet
+//	bit 5 (0x04 byte0) = dataReference
+//	bit 6 (0x02 byte0) = bufferOverflow
+//	bit 7 (0x01 byte0) = entryID
+//	bit 8 (0x80 byte1) = confRev
+func optFldBit(b []byte, mask0, mask1 byte) bool {
+	if mask0 != 0 && len(b) > 0 {
+		return b[0]&mask0 != 0
+	}
+	if mask1 != 0 && len(b) > 1 {
+		return b[1]&mask1 != 0
+	}
+	return false
+}
+
+// BuildInformationReport encodes a complete MMS UnconfirmedPDU / informationReport.
+//
+// Wire layout (per ISO 9506-2 and IEC 61850 reporting.c):
+//
+//	[3] CONSTRUCTED UnconfirmedPDU {
+//	  [0] CONSTRUCTED informationReport {
+//	    [1] CONSTRUCTED variableListName { [0] PRIMITIVE "RPT" }
+//	    [0] CONSTRUCTED listOfAccessResult {
+//	      rptID  optFlds  [sqNum]  [timestamp]  [datSet]  [bufOvfl]  [entryID]  [confRev]
+//	      inclusionField
+//	      [dataRefs]
+//	      dataValues...
+//	      [reasonCodes]
+//	    }
+//	  }
+//	}
+func BuildInformationReport(p InformationReportParams) []byte {
+	optFlds := p.OptFlds
+	hasSeqNum := optFldBit(optFlds, 0x40, 0)
+	hasTimestamp := optFldBit(optFlds, 0x20, 0)
+	hasReason := optFldBit(optFlds, 0x10, 0)
+	hasDatSet := optFldBit(optFlds, 0x08, 0)
+	hasDataRef := optFldBit(optFlds, 0x04, 0)
+	hasBufOvfl := optFldBit(optFlds, 0x02, 0)
+	hasEntryID := optFldBit(optFlds, 0x01, 0)
+	hasConfRev := optFldBit(optFlds, 0, 0x80)
+
+	// Encode all access result items.
+	var resultBody []byte
+
+	// rptID (VisibleString)
+	resultBody = append(resultBody, encodeVisibleStringValue(p.RptID)...)
+
+	// optFlds (BIT_STRING -10)
+	fldBytes := optFlds
+	if len(fldBytes) == 0 {
+		fldBytes = []byte{0x00, 0x00}
+	}
+	resultBody = append(resultBody, encodeBitStringValue(fldBytes, 10)...)
+
+	// [seqNum] (UNSIGNED 16)
+	if hasSeqNum {
+		resultBody = append(resultBody, encodeUnsignedValue(uint64(p.SqNum))...)
+	}
+
+	// [timeOfEntry] (BinaryTime 6-byte, tag 0x8C) — C library uses MMS_BINARY_TIME here.
+	if hasTimestamp {
+		resultBody = append(resultBody, 0x8C, 0x06)
+		resultBody = append(resultBody, utcTimeToBinaryTime6(p.Timestamp)...)
+	}
+
+	// [datSet] (VisibleString)
+	if hasDatSet {
+		resultBody = append(resultBody, encodeVisibleStringValue(p.DatSet)...)
+	}
+
+	// [bufOvfl] (BOOLEAN = tag 0x83, 1 byte)
+	if hasBufOvfl {
+		v := byte(0x00)
+		if p.BufOvfl {
+			v = 0xff
+		}
+		resultBody = append(resultBody, 0x83, 0x01, v)
+	}
+
+	// [entryID] (OCTET_STRING 8)
+	if hasEntryID {
+		resultBody = append(resultBody, encodeOctetStringValue(make([]byte, 8))...)
+	}
+
+	// [confRev] (UNSIGNED 32)
+	if hasConfRev {
+		resultBody = append(resultBody, encodeUnsignedValue(uint64(p.ConfRev))...)
+	}
+
+	// inclusionField: BIT_STRING with one bit per member, all set for GI.
+	nMembers := len(p.Values)
+	inclBits := makeInclusionField(nMembers, p.IsGI)
+	resultBody = append(resultBody, encodeBitStringValue(inclBits, nMembers)...)
+
+	// [dataRefs] — one VisibleString per member if optFlds.dataReference is set.
+	if hasDataRef {
+		for i, ref := range p.Refs {
+			if i >= nMembers {
+				break
+			}
+			resultBody = append(resultBody, encodeVisibleStringValue(ref)...)
+		}
+	}
+
+	// Data values — one per member.
+	for _, v := range p.Values {
+		if enc, err := EncodeValue(v); err == nil {
+			resultBody = append(resultBody, enc...)
+		}
+	}
+
+	// [reasonForInclusion] — one BIT_STRING per member (tag 0x84, 2 bytes: unused=2, value)
+	if hasReason {
+		reason := byte(0x04) // default: GI bit (bit 5 of 6)
+		if !p.IsGI {
+			reason = 0x40 // data-change bit (bit 1 of 6)
+		}
+		for i := 0; i < nMembers; i++ {
+			r := reason
+			if i < len(p.ReasonCodes) {
+				r = p.ReasonCodes[i]
+			}
+			resultBody = append(resultBody, 0x84, 0x02, 0x02, r)
+		}
+	}
+
+	// Wrap in [0] CONSTRUCTED listOfAccessResult.
+	listOfResults := asn1ber.EncodeContextTLV(0, true, resultBody)
+
+	// variableAccessSpecification: [1] CONSTRUCTED { [0] PRIMITIVE "RPT" }
+	varSpec := appendTagLength(0xa1, append([]byte{0x80, 0x03}, []byte("RPT")...))
+
+	// informationReport body = varSpec + listOfResults.
+	reportBody := append(varSpec, listOfResults...)
+
+	// [0] CONSTRUCTED informationReport (UnconfirmedService CHOICE 0).
+	infoReport := asn1ber.EncodeContextTLV(0, true, reportBody)
+
+	// [3] CONSTRUCTED UnconfirmedPDU (MMSpdu CHOICE 3 = 0xa3).
+	return appendTagLength(0xa3, infoReport)
+}
+
+// EncodeUTCTimeNow returns 8 bytes encoding the current wall-clock time as an
+// IEC 61850 UTC timestamp (seconds since epoch in big-endian uint32 + 3 sub-second
+// fraction bytes + 1 quality byte).
+func EncodeUTCTimeNow() []byte {
+	return encodeUTCTime(UTCTimeFromTime(time.Now()))
+}
+
+// encodeVisibleStringValue encodes a bare MMS VisibleString value (tag 0x8a).
+func encodeVisibleStringValue(s string) []byte {
+	b := []byte(s)
+	out := make([]byte, 1+len(asn1ber.EncodeLength(len(b)))+len(b))
+	out[0] = 0x8a
+	lenBytes := asn1ber.EncodeLength(len(b))
+	copy(out[1:], lenBytes)
+	copy(out[1+len(lenBytes):], b)
+	return out
+}
+
+// encodeBitStringValue encodes a BIT_STRING MMS value (tag 0x84).
+// unusedBits = (8 - nBits%8) % 8 — number of unused bits in the last byte.
+func encodeBitStringValue(bits []byte, nBits int) []byte {
+	unused := byte(0)
+	if nBits > 0 {
+		unused = byte((8 - nBits%8) % 8)
+	}
+	content := append([]byte{unused}, bits...)
+	return append([]byte{0x84, byte(len(content))}, content...)
+}
+
+// encodeUnsignedValue encodes an UNSIGNED MMS value (tag 0x86).
+func encodeUnsignedValue(v uint64) []byte {
+	content := asn1ber.EncodeIntegerContent(int64(v))
+	return encodePrimitive(0x86, content)
+}
+
+// utcTimeToBinaryTime6 converts an IEC 61850 8-byte UTC timestamp to a 6-byte BinaryTime.
+// BinaryTime 6: [0:4] ms-within-day (uint32 BE), [4:6] days-since-1984-01-01 (uint16 BE).
+// UTC time: [0:4] seconds-since-unix-epoch (uint32 BE), [4:7] sub-second fractions, [7] quality.
+func utcTimeToBinaryTime6(utcBytes []byte) []byte {
+	var seconds uint32
+	if len(utcBytes) >= 4 {
+		seconds = uint32(utcBytes[0])<<24 | uint32(utcBytes[1])<<16 | uint32(utcBytes[2])<<8 | uint32(utcBytes[3])
+	}
+	const msPerDay = 86400000
+	const daysBetween1970And1984 = 5113 // days from 1970-01-01 to 1984-01-01
+	epochMs := int64(seconds) * 1000
+	totalDays := epochMs / msPerDay
+	msWithinDay := epochMs % msPerDay
+	daysSince1984 := totalDays - daysBetween1970And1984
+	if daysSince1984 < 0 {
+		daysSince1984 = 0
+	}
+	buf := make([]byte, 6)
+	buf[0] = byte(msWithinDay >> 24)
+	buf[1] = byte(msWithinDay >> 16)
+	buf[2] = byte(msWithinDay >> 8)
+	buf[3] = byte(msWithinDay)
+	buf[4] = byte(daysSince1984 >> 8)
+	buf[5] = byte(daysSince1984)
+	return buf
+}
+
+// encodeOctetStringValue encodes an OCTET_STRING MMS value (tag 0x89).
+func encodeOctetStringValue(b []byte) []byte {
+	return encodePrimitive(0x89, b)
+}
+
+// makeInclusionField builds a BIT_STRING byte slice for the inclusion field.
+// If allSet=true every bit is 1 (GI); otherwise all bits are 0.
+func makeInclusionField(nMembers int, allSet bool) []byte {
+	if nMembers == 0 {
+		return []byte{0x00}
+	}
+	nBytes := (nMembers + 7) / 8
+	b := make([]byte, nBytes)
+	if allSet {
+		for i := range b {
+			b[i] = 0xFF
+		}
+		// Clear unused trailing bits in the last byte.
+		unused := nBytes*8 - nMembers
+		if unused > 0 {
+			b[nBytes-1] &^= byte((1 << unused) - 1)
+		}
+	}
+	return b
 }
 
 // buildConfirmedResponse wraps service PDU in a ConfirmedResponsePDU.

@@ -43,6 +43,7 @@ import (
 	"time"
 
 	generatedModel "github.com/PVKonovalov/libiec61850-Go/internal/model"
+	"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/common"
 	imodel "github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/model"
 	"github.com/PVKonovalov/libiec61850-Go/pkg/iec61850/server"
 	"github.com/PVKonovalov/libiec61850-Go/pkg/mms"
@@ -68,13 +69,14 @@ func main() {
 		}
 	}
 	if debug {
-		mms.SetLogLevel(mms.LogDebug)
+		mms.SetLogLevel(mms.LogTrace)
 	}
 
 	iedModel := generatedModel.BuildModel()
 
 	totWMagF, _ := iedModel.FindNode("Device1/MMXU2.TotW.mag.f").(*imodel.DataAttribute)
 	totWT, _ := iedModel.FindNode("Device1/MMXU2.TotW.t").(*imodel.DataAttribute)
+	valQ, _ := iedModel.FindNode("Device1/MMXU2.TotW.q").(*imodel.DataAttribute)
 
 	iedServer := server.NewIedServer(iedModel, nil)
 	if err := iedServer.Start("0.0.0.0", port); err != nil {
@@ -88,23 +90,35 @@ func main() {
 
 	start := time.Now()
 	updateTicker := time.NewTicker(1 * time.Second)
-
+	count := 0
 	for {
 		select {
 		case <-sigCh:
 			updateTicker.Stop()
 			goto exit
 		case <-updateTicker.C:
-			// Update some values in the model every second
+			// Update measurement values every second.
+			// Set t and q directly (no trigger) so they are bundled into the
+			// single report fired by the mag.f UpdateAttributeValue call.
 			now := time.Now()
 			elapsed := now.Sub(start).Seconds()
 			v := float32(math.Sin(2 * math.Pi * elapsed / 30.0))
+			if totWT != nil {
+				totWT.Value = mms.NewUTCTime(mms.UTCTimeFromTime(now))
+			}
+			if valQ != nil {
+				if count%10 == 0 {
+					// every 10 seconds, set quality to bad
+					valQ.Value = mms.NewQuality(common.QualityInvalid)
+				} else {
+					// otherwise, set quality to good
+					valQ.Value = mms.NewQuality(common.QualityGood)
+				}
+			}
 			if totWMagF != nil {
 				iedServer.UpdateAttributeValue(totWMagF, mms.NewFloat32(v))
 			}
-			if totWT != nil {
-				iedServer.UpdateAttributeValue(totWT, mms.NewUTCTime(mms.UTCTimeFromTime(now)))
-			}
+			count++
 		}
 	}
 
