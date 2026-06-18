@@ -775,14 +775,10 @@ func BuildInformationReport(p InformationReportParams) []byte {
 		resultBody = append(resultBody, encodeUnsignedValue(uint64(p.SqNum))...)
 	}
 
-	// [timeOfEntry] (UTCTime = tag 0x91, 8 bytes)
+	// [timeOfEntry] (BinaryTime 6-byte, tag 0x8C) — C library uses MMS_BINARY_TIME here.
 	if hasTimestamp {
-		ts := p.Timestamp
-		if len(ts) != 8 {
-			ts = make([]byte, 8)
-		}
-		resultBody = append(resultBody, 0x91, 0x08)
-		resultBody = append(resultBody, ts...)
+		resultBody = append(resultBody, 0x8C, 0x06)
+		resultBody = append(resultBody, utcTimeToBinaryTime6(p.Timestamp)...)
 	}
 
 	// [datSet] (VisibleString)
@@ -895,6 +891,33 @@ func encodeBitStringValue(bits []byte, nBits int) []byte {
 func encodeUnsignedValue(v uint64) []byte {
 	content := asn1ber.EncodeIntegerContent(int64(v))
 	return encodePrimitive(0x86, content)
+}
+
+// utcTimeToBinaryTime6 converts an IEC 61850 8-byte UTC timestamp to a 6-byte BinaryTime.
+// BinaryTime 6: [0:4] ms-within-day (uint32 BE), [4:6] days-since-1984-01-01 (uint16 BE).
+// UTC time: [0:4] seconds-since-unix-epoch (uint32 BE), [4:7] sub-second fractions, [7] quality.
+func utcTimeToBinaryTime6(utcBytes []byte) []byte {
+	var seconds uint32
+	if len(utcBytes) >= 4 {
+		seconds = uint32(utcBytes[0])<<24 | uint32(utcBytes[1])<<16 | uint32(utcBytes[2])<<8 | uint32(utcBytes[3])
+	}
+	const msPerDay = 86400000
+	const daysBetween1970And1984 = 5113 // days from 1970-01-01 to 1984-01-01
+	epochMs := int64(seconds) * 1000
+	totalDays := epochMs / msPerDay
+	msWithinDay := epochMs % msPerDay
+	daysSince1984 := totalDays - daysBetween1970And1984
+	if daysSince1984 < 0 {
+		daysSince1984 = 0
+	}
+	buf := make([]byte, 6)
+	buf[0] = byte(msWithinDay >> 24)
+	buf[1] = byte(msWithinDay >> 16)
+	buf[2] = byte(msWithinDay >> 8)
+	buf[3] = byte(msWithinDay)
+	buf[4] = byte(daysSince1984 >> 8)
+	buf[5] = byte(daysSince1984)
+	return buf
 }
 
 // encodeOctetStringValue encodes an OCTET_STRING MMS value (tag 0x89).
