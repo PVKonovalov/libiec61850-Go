@@ -62,7 +62,7 @@ func BuildModel() *imodel.IedModel {
 	ds21 := &imodel.DataSet{Name: "LLN0$dataset1"}
 	// Option A: single DO-level member — server sends STRUCTURE{mag{f}, q, t}.
 	// IED Explorer may display the path as "TotW.mag" (first child) instead of "TotW.mag.f".
-	//   ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/MMXU2.TotW", FC: common.FC_MX})
+	//ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/MMXU2.TotW", FC: common.FC_MX})
 	//
 	// Option B (active): three leaf DA members — IED Explorer shows exact paths.
 	ds21.Members = append(ds21.Members, imodel.DataSetMember{Reference: "Device1/MMXU2.TotW.mag.f", FC: common.FC_MX})

@@ -197,17 +197,29 @@ func ParseGetNameListRequestContent(content []byte) (*GetNameListRequest, error)
 	return req, nil
 }
 
+// ReadSpec holds the parsed result of a Read service request.
+// Either IsNamedList=false (explicit variable list) or IsNamedList=true (named variable list).
+type ReadSpec struct {
+	IsNamedList  bool
+	Specs        []VariableSpecification // when !IsNamedList
+	DomainID     string                  // when IsNamedList (empty = vmd-specific)
+	ItemID       string                  // when IsNamedList
+	IsAASpecific bool                    // when IsNamedList and aa-specific
+}
+
 // ParseReadRequestContent parses the content of a Read confirmed service request.
 //
 // Wire layout (ISO 9506-2):
 //
 //	[0] IMPLICIT BOOLEAN OPTIONAL  -- specificationWithResult (ignored per IEC 61850)
-//	[1] IMPLICIT variableAccessSpecification
-func ParseReadRequestContent(content []byte) ([]VariableSpecification, error) {
+//	[1] IMPLICIT variableAccessSpecification CHOICE {
+//	    listOfVariable    [0] IMPLICIT SEQUENCE OF VariableSpecification
+//	    variableListName  [1] IMPLICIT ObjectName  (domainSpecific / vmdSpecific / aaSpecific)
+//	}
+func ParseReadRequestContent(content []byte) (*ReadSpec, error) {
 	pos := 0
 
 	// Skip optional [0] IMPLICIT BOOLEAN specificationWithResult (tag 0x80).
-	// IEC 61850 servers ignore this flag; the C library does the same.
 	if len(content) > 0 && content[0] == 0x80 {
 		tlv, next, err := asn1ber.ParseTLV(content, 0)
 		if err == nil && tlv.Class == asn1ber.ClassContext && tlv.Tag == 0 {
@@ -215,7 +227,7 @@ func ParseReadRequestContent(content []byte) ([]VariableSpecification, error) {
 		}
 	}
 
-	// Strip [1] EXPLICIT variableAccessSpec
+	// Strip [1] variableAccessSpec wrapper.
 	varAccessTLV, _, err := asn1ber.ParseTLV(content, pos)
 	if err != nil {
 		return nil, fmt.Errorf("mms: ReadRequest: parse variableAccessSpec: %w", err)
@@ -225,32 +237,81 @@ func ParseReadRequestContent(content []byte) ([]VariableSpecification, error) {
 			varAccessTLV.Class, varAccessTLV.Tag)
 	}
 
-	// Strip [0] listOfVariable
-	listTLV, _, err2 := asn1ber.ParseTLV(varAccessTLV.Value, 0)
+	// Discriminate on the inner CHOICE tag.
+	innerTLV, _, err2 := asn1ber.ParseTLV(varAccessTLV.Value, 0)
 	if err2 != nil {
-		return nil, fmt.Errorf("mms: ReadRequest: parse listOfVariable: %w", err2)
-	}
-	if listTLV.Class != asn1ber.ClassContext || listTLV.Tag != 0 {
-		return nil, fmt.Errorf("mms: ReadRequest: expected [0] listOfVariable, got class=%d tag=%d",
-			listTLV.Class, listTLV.Tag)
+		return nil, fmt.Errorf("mms: ReadRequest: parse inner choice: %w", err2)
 	}
 
-	// Iterate 0x30 SEQUENCE items (ListOfVariableSeq entries)
-	var specs []VariableSpecification
-	pos = 0
-	for pos < len(listTLV.Value) {
-		seqTLV, newPos, err := asn1ber.ParseTLV(listTLV.Value, pos)
-		if err != nil {
-			break
+	switch {
+	case innerTLV.Class == asn1ber.ClassContext && innerTLV.Tag == 0 && innerTLV.Constructed:
+		// listOfVariable [0] IMPLICIT SEQUENCE OF — IMPLICIT tag replaces SEQUENCE tag.
+		var specs []VariableSpecification
+		p := 0
+		for p < len(innerTLV.Value) {
+			seqTLV, newPos, err := asn1ber.ParseTLV(innerTLV.Value, p)
+			if err != nil {
+				break
+			}
+			p = newPos
+			spec, err := parseVariableSpec(seqTLV.Value)
+			if err != nil {
+				continue
+			}
+			specs = append(specs, spec)
 		}
-		pos = newPos
-		spec, err := parseVariableSpec(seqTLV.Value)
-		if err != nil {
-			continue
+		return &ReadSpec{IsNamedList: false, Specs: specs}, nil
+
+	case innerTLV.Class == asn1ber.ClassContext && innerTLV.Tag == 1 && innerTLV.Constructed:
+		// variableListName [1] EXPLICIT { ObjectName } — asn1c uses EXPLICIT here.
+		// Unwrap one more level to reach the ObjectName CHOICE.
+		objectNameTLV, _, err3 := asn1ber.ParseTLV(innerTLV.Value, 0)
+		if err3 != nil {
+			return nil, fmt.Errorf("mms: ReadRequest: variableListName: parse ObjectName: %w", err3)
 		}
-		specs = append(specs, spec)
+		return parseObjectName(objectNameTLV), nil
+
+	default:
+		return nil, fmt.Errorf("mms: ReadRequest: unknown variableAccessSpec inner tag class=%d tag=%d",
+			innerTLV.Class, innerTLV.Tag)
 	}
-	return specs, nil
+}
+
+// parseObjectName parses an ASN.1 ObjectName CHOICE TLV into a ReadSpec with IsNamedList=true.
+// ObjectName ::= CHOICE {
+//
+//	vmdspecific    [0] IMPLICIT Identifier   (PRIMITIVE)
+//	domainspecific [1] IMPLICIT SEQUENCE { domainId Identifier, itemId Identifier } (CONSTRUCTED)
+//	aaspecific     [2] IMPLICIT Identifier   (PRIMITIVE)
+func parseObjectName(tlv *asn1ber.TLV) *ReadSpec {
+	spec := &ReadSpec{IsNamedList: true}
+	if tlv.Class != asn1ber.ClassContext {
+		return spec
+	}
+	switch tlv.Tag {
+	case 0: // vmdspecific
+		spec.ItemID = string(tlv.Value)
+	case 1: // domainspecific { 0x1a domainId, 0x1a itemId }
+		p := 0
+		for p < len(tlv.Value) {
+			elem, newP, err := asn1ber.ParseTLV(tlv.Value, p)
+			if err != nil {
+				break
+			}
+			p = newP
+			if elem.Class == asn1ber.ClassUniversal && elem.Tag == asn1ber.TagVisibleString {
+				if spec.DomainID == "" {
+					spec.DomainID = string(elem.Value)
+				} else {
+					spec.ItemID = string(elem.Value)
+				}
+			}
+		}
+	case 2: // aaspecific
+		spec.ItemID = string(tlv.Value)
+		spec.IsAASpecific = true
+	}
+	return spec
 }
 
 // ParseWriteRequestContent parses the content of a Write service request.

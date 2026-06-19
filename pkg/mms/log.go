@@ -27,6 +27,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 )
 
@@ -75,6 +76,19 @@ var (
 	logLevel           = LogNone
 	logOut   io.Writer = os.Stderr
 )
+
+// LogLevelFromString converts a string to a LogLevel value. Case-insensitive.
+// Returns LogNone for unrecognized strings.
+func LogLevelFromString(s string) LogLevel {
+	switch strings.ToLower(s) {
+	case "trace":
+		return LogTrace
+	case "debug":
+		return LogDebug
+	default:
+		return LogNone
+	}
+}
 
 // SetLogLevel sets the logging verbosity and enables output to os.Stderr.
 // Pass LogNone to disable all logging.

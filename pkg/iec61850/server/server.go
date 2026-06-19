@@ -704,14 +704,18 @@ func (c *serverConn) handleConfirmedRequest(data []byte) ([]byte, error) {
 
 // handleRead serves a Read request.
 func (c *serverConn) handleRead(invokeID uint32, content []byte) ([]byte, error) {
-	specs, err := mms.ParseReadRequestContent(content)
+	req, err := mms.ParseReadRequestContent(content)
 	if err != nil {
 		c.logf(mms.EventError, "invokeID=%d svc=Read reason=%v", invokeID, err)
 		return mms.BuildErrorResponse(invokeID, mms.ErrInvalidArguments), nil
 	}
 
+	if req.IsNamedList {
+		return c.handleReadNamedList(invokeID, req.DomainID, req.ItemID), nil
+	}
+
 	var results []*mms.ReadResult
-	for _, spec := range specs {
+	for _, spec := range req.Specs {
 		c.logf(mms.EventRead, "invokeID=%d domain=%s item=%s", invokeID, spec.DomainID, spec.ItemID)
 		value, err := c.resolveVariable(spec)
 		result := &mms.ReadResult{}
@@ -726,6 +730,65 @@ func (c *serverConn) handleRead(invokeID uint32, content []byte) ([]byte, error)
 	}
 
 	return mms.BuildReadResponse(invokeID, results), nil
+}
+
+// handleReadNamedList serves a Read request for a named variable list (dataset).
+// domainID is the MMS domain name (e.g. "SampleIEDDevice1"), itemID is the list name (e.g. "LLN0$dataset1").
+func (c *serverConn) handleReadNamedList(invokeID uint32, domainID, itemID string) []byte {
+	c.logf(mms.EventRead, "invokeID=%d svc=ReadNamedList domain=%s item=%s", invokeID, domainID, itemID)
+
+	// Find the dataset by matching the MMS dataset name to itemID and the domain to domainID.
+	var ds *model.DataSet
+	for _, d := range c.server.model.DataSets {
+		if d.Name != itemID {
+			continue
+		}
+		// If domainID is specified, verify at least one member belongs to that domain.
+		if domainID == "" {
+			ds = d
+			break
+		}
+		for _, m := range d.Members {
+			parts := splitRef(m.Reference)
+			if len(parts) > 0 && c.ldInstToMmsDomain(parts[0]) == domainID {
+				ds = d
+				break
+			}
+		}
+		if ds != nil {
+			break
+		}
+	}
+	if ds == nil {
+		c.logf(mms.EventError, "invokeID=%d ReadNamedList: dataset not found: %s/%s", invokeID, domainID, itemID)
+		return mms.BuildErrorResponse(invokeID, mms.ErrAccessObjectNonExistent)
+	}
+
+	var results []*mms.ReadResult
+	for _, m := range ds.Members {
+		node := c.server.model.FindNode(m.Reference)
+		result := &mms.ReadResult{}
+		if node == nil {
+			result.IsError = true
+			result.Error = mms.DataAccessErrorObjectNonExistent
+		} else {
+			switch n := node.(type) {
+			case *model.DataAttribute:
+				if n.Value != nil {
+					result.Value = n.Value
+				} else {
+					result.Value = zeroValueForType(n.AttrType)
+				}
+			case *model.DataObject:
+				result.Value = buildStructureFromDO(n, m.FC)
+			default:
+				result.IsError = true
+				result.Error = mms.DataAccessErrorObjectAccessUnsupported
+			}
+		}
+		results = append(results, result)
+	}
+	return mms.BuildReadResponse(invokeID, results)
 }
 
 // handleWrite serves a Write request.
