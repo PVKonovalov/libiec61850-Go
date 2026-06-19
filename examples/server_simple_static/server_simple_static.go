@@ -34,11 +34,11 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"math"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -50,27 +50,11 @@ import (
 )
 
 func main() {
-	port := 102
-	debug := false
-	var positional []string
-	for _, a := range os.Args[1:] {
-		if a == "-debug" || a == "--debug" {
-			debug = true
-		} else {
-			positional = append(positional, a)
-		}
-	}
-	if len(positional) > 0 {
-		var err error
-		port, err = strconv.Atoi(positional[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid port: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if debug {
-		mms.SetLogLevel(mms.LogTrace)
-	}
+	port := flag.Int("port", 102, "IEC 61850 server binding port")
+	logLevel := flag.String("log", "", "Log level (trace, debug,none)")
+	flag.Parse()
+
+	mms.SetLogLevel(mms.LogLevelFromString(*logLevel))
 
 	iedModel := generatedModel.BuildModel()
 
@@ -79,11 +63,11 @@ func main() {
 	valQ, _ := iedModel.FindNode("Device1/MMXU2.TotW.q").(*imodel.DataAttribute)
 
 	iedServer := server.NewIedServer(iedModel, nil)
-	if err := iedServer.Start("0.0.0.0", port); err != nil {
+	if err := iedServer.Start("0.0.0.0", *port); err != nil {
 		fmt.Printf("Starting server failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Server started on port %d\n", port)
+	fmt.Printf("Server started on port %d\n", *port)
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -102,7 +86,7 @@ func main() {
 			// single report fired by the mag.f UpdateAttributeValue call.
 			now := time.Now()
 			elapsed := now.Sub(start).Seconds()
-			v := float32(math.Sin(2 * math.Pi * elapsed / 30.0))
+			v := float32(math.Sin(elapsed / 30.0))
 			if totWT != nil {
 				totWT.Value = mms.NewUTCTime(mms.UTCTimeFromTime(now))
 			}

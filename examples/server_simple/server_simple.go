@@ -36,10 +36,10 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -50,28 +50,11 @@ import (
 )
 
 func main() {
-	port := 102
-	debug := false
-	args := os.Args[1:]
-	var filtered []string
-	for _, a := range args {
-		if a == "-debug" || a == "--debug" {
-			debug = true
-		} else {
-			filtered = append(filtered, a)
-		}
-	}
-	if len(filtered) > 0 {
-		var err error
-		port, err = strconv.Atoi(filtered[0])
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "invalid port: %v\n", err)
-			os.Exit(1)
-		}
-	}
-	if debug {
-		mms.SetLogLevel(mms.LogDebug)
-	}
+	port := flag.Int("port", 102, "IEC 61850 server binding port")
+	logLevel := flag.String("log", "", "Log level (trace, debug,none)")
+	flag.Parse()
+
+	mms.SetLogLevel(mms.LogLevelFromString(*logLevel))
 
 	// ---- Build the data model ----
 	iedModel, spcsoDAs := buildModel()
@@ -79,11 +62,11 @@ func main() {
 	// ---- Create and start the server ----
 	iedServer := server.NewIedServer(iedModel, nil)
 
-	if err := iedServer.Start("0.0.0.0", port); err != nil {
+	if err := iedServer.Start("0.0.0.0", *port); err != nil {
 		fmt.Printf("Starting server failed: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Printf("Server started on port %d\n", port)
+	fmt.Printf("Server started on port %d\n", *port)
 
 	// ---- Simulate process: toggle outputs every second ----
 	go func() {
