@@ -29,6 +29,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // LogLevel controls the verbosity of MMS / IEC 61850 logging.
@@ -126,7 +127,7 @@ func Logf(role Role, event string, format string, args ...any) {
 	if level < LogDebug {
 		return
 	}
-	msg := fmt.Sprintf("[IEC61850] [%s] [%s]", role, event)
+	msg := fmt.Sprintf("[%s] [%s] [%s]", time.Now().Format("02/01/2006 15:04:05.000"), role, event)
 	if format != "" {
 		msg += " " + fmt.Sprintf(format, args...)
 	}

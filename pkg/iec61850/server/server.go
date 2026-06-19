@@ -1120,26 +1120,13 @@ func buildTypeSpecBRCB() []byte {
 // Structure: LN → { FC → { DO → { DA... } }, BR → { rcbName → { field... } } }
 // rcbs is the full RCB list; used to inject the BR group when the LN has buffered RCBs.
 func buildTypeSpecLN(ln *model.LogicalNode, rcbs []*model.ReportControlBlock, ldInst string) []byte {
-	// Collect data objects grouped by FC
+	// Collect FCs present in each DO (including sub-DOs recursively).
 	fcMap := make(map[string][]string) // FC → list of DO names
 	fcOrder := []string{}
-	doFCDAs := make(map[string]map[string][]*model.DataAttribute) // do → fc → []DA
 
 	for _, do := range ln.DataObjects() {
-		if _, exists := doFCDAs[do.Name()]; !exists {
-			doFCDAs[do.Name()] = make(map[string][]*model.DataAttribute)
-		}
-		for _, child := range do.Children() {
-			da, ok := child.(*model.DataAttribute)
-			if !ok {
-				continue
-			}
-			fc := da.FC.String()
-			if fc == "" || fc == "NONE" {
-				continue
-			}
-			doFCDAs[do.Name()][fc] = append(doFCDAs[do.Name()][fc], da)
-			// Track FC order and which DOs belong to each FC
+		doFCs := collectDOFCs(do)
+		for fc := range doFCs {
 			found := false
 			for _, f := range fcOrder {
 				if f == fc {
@@ -1163,6 +1150,12 @@ func buildTypeSpecLN(ln *model.LogicalNode, rcbs []*model.ReportControlBlock, ld
 		}
 	}
 
+	// Build a map from name to DO for lookup.
+	doByName := make(map[string]*model.DataObject)
+	for _, do := range ln.DataObjects() {
+		doByName[do.Name()] = do
+	}
+
 	sort.Strings(fcOrder)
 
 	// Collect BRCB type spec for this LN (if any).
@@ -1184,10 +1177,10 @@ func buildTypeSpecLN(ln *model.LogicalNode, rcbs []*model.ReportControlBlock, ld
 
 		var doComponents []mms.TypeSpecComponent
 		for _, doName := range doNames {
-			das := doFCDAs[doName][fc]
+			do := doByName[doName]
 			doComponents = append(doComponents, mms.TypeSpecComponent{
 				Name:     doName,
-				TypeSpec: buildTypeSpecDAsAsStructure(das),
+				TypeSpec: buildTypeSpecDO(do, fc),
 			})
 		}
 		lnComponents = append(lnComponents, mms.TypeSpecComponent{
@@ -1205,19 +1198,50 @@ func buildTypeSpecLN(ln *model.LogicalNode, rcbs []*model.ReportControlBlock, ld
 	return mms.TypeSpecStructure(lnComponents)
 }
 
-// buildTypeSpecDO builds a TypeSpecification for a specific FC-filtered data object.
-func buildTypeSpecDO(do *model.DataObject, fcFilter string) []byte {
-	var das []*model.DataAttribute
+// collectDOFCs returns the set of FC strings present in a DataObject's
+// DataAttributes, including those in sub-DataObjects (e.g. phsA, phsB, phsC).
+func collectDOFCs(do *model.DataObject) map[string]bool {
+	fcs := make(map[string]bool)
 	for _, child := range do.Children() {
-		da, ok := child.(*model.DataAttribute)
-		if !ok {
-			continue
-		}
-		if fcFilter == "" || da.FC.String() == fcFilter {
-			das = append(das, da)
+		switch n := child.(type) {
+		case *model.DataAttribute:
+			fc := n.FC.String()
+			if fc != "" && fc != "NONE" {
+				fcs[fc] = true
+			}
+		case *model.DataObject:
+			for fc := range collectDOFCs(n) {
+				fcs[fc] = true
+			}
 		}
 	}
-	return buildTypeSpecDAsAsStructure(das)
+	return fcs
+}
+
+// buildTypeSpecDO builds a TypeSpecification for a specific FC-filtered data object.
+func buildTypeSpecDO(do *model.DataObject, fcFilter string) []byte {
+	var comps []mms.TypeSpecComponent
+	for _, child := range do.Children() {
+		switch n := child.(type) {
+		case *model.DataAttribute:
+			if fcFilter == "" || n.FC.String() == fcFilter {
+				comps = append(comps, mms.TypeSpecComponent{Name: n.Name(), TypeSpec: buildTypeSpecDA(n)})
+			}
+		case *model.DataObject:
+			// Flatten sub-DO (phsA/phsB/phsC in WYE/DEL/SEQ) into the parent level.
+			// IED Explorer cannot handle nested named structures at the DO level.
+			if fcFilter == "" || collectDOFCs(n)[fcFilter] {
+				for _, grandchild := range n.Children() {
+					if da, ok := grandchild.(*model.DataAttribute); ok {
+						if fcFilter == "" || da.FC.String() == fcFilter {
+							comps = append(comps, mms.TypeSpecComponent{Name: da.Name(), TypeSpec: buildTypeSpecDA(da)})
+						}
+					}
+				}
+			}
+		}
+	}
+	return mms.TypeSpecStructure(comps)
 }
 
 // buildTypeSpecForDAPath traverses a chain of DA names (e.g. ["mag","f"]) starting from a DO,
@@ -1447,7 +1471,7 @@ func (c *serverConn) resolveVariable(spec mms.VariableSpecification) (*mms.Value
 			}
 			return n.Value, nil
 		case *model.DataObject:
-			return buildStructureFromDO(n, common.FC_NONE), nil
+			return buildStructureFromDO(n, common.ParseFC(parts[1])), nil
 		default:
 			return nil, fmt.Errorf("unsupported node type for %s", dotPath)
 		}
@@ -1511,19 +1535,14 @@ func buildStructureByFC(ln *model.LogicalNode, fc string) (*mms.Value, error) {
 
 	var members []*mms.Value
 	found := false
+	parsedFC := common.ParseFC(fc)
 	for _, do := range sorted {
-		var dMembers []*mms.Value
-		for _, child := range do.Children() {
-			da, ok := child.(*model.DataAttribute)
-			if !ok || da.FC.String() != fc {
-				continue
-			}
-			dMembers = append(dMembers, buildValueFromDA(da))
-			found = true
+		doFCs := collectDOFCs(do)
+		if !doFCs[fc] {
+			continue
 		}
-		if len(dMembers) > 0 {
-			members = append(members, mms.NewStructure(dMembers))
-		}
+		found = true
+		members = append(members, buildStructureFromDO(do, parsedFC))
 	}
 	if !found {
 		return nil, fmt.Errorf("no %s data in %s", fc, ln.Name())
@@ -1785,7 +1804,17 @@ func buildStructureFromDO(do *model.DataObject, fc common.FunctionalConstraint) 
 				members = append(members, buildValueFromDA(n))
 			}
 		case *model.DataObject:
-			members = append(members, buildStructureFromDO(n, fc))
+			// Flatten sub-DO (phsA/phsB/phsC in WYE/DEL/SEQ) into the parent level.
+			// Mirrors buildTypeSpecDO flattening so TypeSpec and Value are consistent.
+			if fc == common.FC_NONE || collectDOFCs(n)[fc.String()] {
+				for _, grandchild := range n.Children() {
+					if da, ok := grandchild.(*model.DataAttribute); ok {
+						if fc == common.FC_NONE || da.FC == fc {
+							members = append(members, buildValueFromDA(da))
+						}
+					}
+				}
+			}
 		}
 	}
 	return mms.NewStructure(members)
@@ -1829,13 +1858,7 @@ func (c *serverConn) buildStructureFromLNWithBR(ln *model.LogicalNode, ldInst st
 	fcOrder := []string{}
 
 	for _, do := range ln.DataObjects() {
-		doFCs := map[string]bool{}
-		for _, child := range do.Children() {
-			if da, ok := child.(*model.DataAttribute); ok {
-				doFCs[da.FC.String()] = true
-			}
-		}
-		for fc := range doFCs {
+		for fc := range collectDOFCs(do) {
 			if fc == "" || fc == "NONE" {
 				continue
 			}
@@ -1878,13 +1901,7 @@ func (c *serverConn) buildStructureFromLNWithBR(ln *model.LogicalNode, ldInst st
 		sort.Slice(dos, func(i, j int) bool { return dos[i].Name() < dos[j].Name() })
 		var doMembers []*mms.Value
 		for _, do := range dos {
-			var dMembers []*mms.Value
-			for _, child := range do.Children() {
-				if da, ok := child.(*model.DataAttribute); ok && da.FC.String() == fc {
-					dMembers = append(dMembers, buildValueFromDA(da))
-				}
-			}
-			doMembers = append(doMembers, mms.NewStructure(dMembers))
+			doMembers = append(doMembers, buildStructureFromDO(do, common.ParseFC(fc)))
 		}
 		members = append(members, mms.NewStructure(doMembers))
 	}

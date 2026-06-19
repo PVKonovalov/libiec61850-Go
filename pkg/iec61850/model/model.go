@@ -286,6 +286,20 @@ func NewDataObject(name string, parent *LogicalNode) *DataObject {
 	return do
 }
 
+// NewSubDataObject creates a sub-DataObject as a child of another DataObject.
+// This supports IEC 61850 complex CDC types (WYE, DEL, SEQ) where a DataObject
+// contains named sub-DataObjects (e.g. phsA, phsB, phsC) rather than flat DAs.
+func NewSubDataObject(name string, parent *DataObject) *DataObject {
+	do := &DataObject{ArrayIndex: -1}
+	do.name = name
+	do.nodeType = NodeTypeDataObject
+	do.parent = parent
+	if parent != nil {
+		parent.addChild(do)
+	}
+	return do
+}
+
 // Path returns the full path of this data object.
 func (do *DataObject) Path() string {
 	if do.parent == nil {
@@ -315,16 +329,23 @@ func (do *DataObject) findInDO(parts []string) Node {
 	if len(parts) == 0 {
 		return do
 	}
-	daName := parts[0]
+	name := parts[0]
 	for _, c := range do.children {
-		da, ok := c.(*DataAttribute)
-		if !ok || da.name != daName {
-			continue
+		switch n := c.(type) {
+		case *DataAttribute:
+			if n.name != name {
+				continue
+			}
+			if len(parts) == 1 {
+				return n
+			}
+			return n.findInDA(parts[1:])
+		case *DataObject:
+			if n.name != name {
+				continue
+			}
+			return n.findInDO(parts[1:])
 		}
-		if len(parts) == 1 {
-			return da
-		}
-		return da.findInDA(parts[1:])
 	}
 	return nil
 }
